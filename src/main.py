@@ -15,12 +15,14 @@ def main():
         pruned_G, pruned_ordered_nodes = prune_leaves_iteratively(raw_G)
         
         # Phase 3: Mathematical Matrix Computation
-        # We compute floyd_warshall_numpy here in main() because it bridges 
-        # the gap between the graph topology and the normalized math.
+        # Convert to undirected so Floyd-Warshall can traverse edges in both
+        # directions — the DiGraph only has parent->child edges, which makes
+        # any upward or sibling path return inf, and inf/inf normalizes to NaN.
         print("\n--- Computing Distance Matrix ---")
+        undirected_G = pruned_G.to_undirected()
         pruned_distance_matrix = nx.floyd_warshall_numpy(
-            pruned_G, 
-            nodelist=pruned_ordered_nodes, 
+            undirected_G,
+            nodelist=pruned_ordered_nodes,
             weight='weight'
         )
         

@@ -9,3 +9,10 @@ __pycache__/
 
 # macOS
 .DS_Store
+
+assets/
+.claude/
+
+requirements.txt
+.vscode
+

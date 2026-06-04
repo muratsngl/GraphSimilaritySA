@@ -24,13 +24,19 @@ import numpy as np
 # Phase 1: Pre-Computation & Classification
 # --------------------------------------------------------------------------- #
 
-def build_affinity(normalized_distance_matrix):
-    """K = e^{-D}. Rewards local matches, penalizes distant noise.
+def build_affinity(normalized_distance_matrix, sigma=1.0):
+    """K = e^{-D/sigma}. Rewards local matches, penalizes distant noise.
 
     Expects a normalized [0, 1] distance matrix (see utils.normalize_distance_matrix).
+
+    `sigma` is the kernel bandwidth. With D already max-normalized to [0, 1],
+    sigma=1.0 squashes K into [e^-1, 1] ~= [0.37, 1], washing out the near/far
+    contrast the QAP objective relies on. Smaller sigma restores it: sigma=0.1
+    gives D/sigma in [0, 10] -> K in [~4.5e-5, 1], the full dynamic range that
+    Holzschuh gets for free from raw (un-normalized) geodesics.
     """
     D = np.asarray(normalized_distance_matrix, dtype=np.float64)
-    return np.exp(-D)
+    return np.exp(-D / sigma)
 
 
 def classify_nodes(adjacency_or_degrees):
@@ -292,6 +298,48 @@ def simulated_annealing(K_ik, K_trg,
         T *= alpha
 
     return best.state, best_energy, history
+
+
+def simulated_annealing_restarts(K_ik, K_trg,
+                                 ik_leaves, ik_internals,
+                                 trg_leaves, trg_internals,
+                                 n_restarts=20,
+                                 seed=None,
+                                 verbose=False,
+                                 **sa_kwargs):
+    """Run SA `n_restarts` times from independent seeds; keep the best.
+
+    The search space here is tiny (a 17-node injection), so multiple random
+    restarts buy more robustness against local minima than any single clever
+    cooling schedule. Returns the same (best_state, best_energy, history) tuple
+    as simulated_annealing(), for the single best restart.
+
+    Seeding: a single fixed seed would make every restart identical, which is
+    pointless. We use a SeedSequence to spawn `n_restarts` child streams that
+    are mutually distinct yet fully reproducible across runs.
+    """
+    child_seeds = np.random.SeedSequence(seed).spawn(n_restarts)
+
+    best_state = None
+    best_energy = np.inf
+    best_history = None
+
+    for i, child in enumerate(child_seeds):
+        state, e, hist = simulated_annealing(
+            K_ik, K_trg,
+            ik_leaves, ik_internals,
+            trg_leaves, trg_internals,
+            seed=child,
+            verbose=False,
+            **sa_kwargs,
+        )
+        if e < best_energy:
+            best_state, best_energy, best_history = state, e, hist
+        if verbose:
+            print(f"restart {i + 1:>2}/{n_restarts}: "
+                  f"E={e:.6f}  best={best_energy:.6f}")
+
+    return best_state, best_energy, best_history
 
 
 # --------------------------------------------------------------------------- #

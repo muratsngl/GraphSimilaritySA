@@ -7,7 +7,11 @@ from skeleton_extraction import build_qap_ready_graph
 from graph_modification import prune_leaves_iteratively
 from skeleton import build_human36m_graph
 from utils import normalize_distance_matrix
-from simulated_annealing import build_affinity, simulated_annealing
+from simulated_annealing import build_affinity, simulated_annealing_restarts
+
+# Kernel bandwidth for build_affinity (K = e^{-D/SIGMA}). With D max-normalized
+# to [0, 1], SIGMA < 1 keeps the near/far affinity contrast the QAP relies on.
+SIGMA = 0.1
 
 
 # --------------------------------------------------------------------------- #
@@ -97,8 +101,8 @@ def main():
         ik_leaves, ik_internals = classify_positions(G_ik, ik_ordered)
         trg_leaves, trg_internals = classify_positions(pruned_G, trg_ordered)
 
-        K_ik = build_affinity(D_ik)
-        K_trg = build_affinity(D_trg)
+        K_ik = build_affinity(D_ik, sigma=SIGMA)
+        K_trg = build_affinity(D_trg, sigma=SIGMA)
 
         print("\n=== STAGING ===")
         print(f"IK rig:  {len(ik_ordered)} nodes "
@@ -114,16 +118,17 @@ def main():
                 "Adjust pruning or relax the per-class constraint."
             )
 
-        # --- Run Simulated Annealing ---------------------------------------- #
+        # --- Run Simulated Annealing (best of N restarts) ------------------- #
         print("\n--- Running Simulated Annealing ---")
-        best_state, best_energy, history = simulated_annealing(
+        best_state, best_energy, history = simulated_annealing_restarts(
             K_ik, K_trg,
             ik_leaves, ik_internals,
             trg_leaves, trg_internals,
+            n_restarts=20,
+            seed=71,
+            verbose=True,
             T=1.0, alpha=0.99, T_min=0.00001,
             iters_per_temp=100,
-            seed=71,
-            verbose=False,
         )
 
         # --- Report the mapping (positions -> ids -> names) ----------------- #

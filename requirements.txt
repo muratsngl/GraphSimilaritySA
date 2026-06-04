@@ -1,0 +1,13 @@
+# GLTF / GLB Parsing
+pygltflib
+
+# Graph Topology and Optimization Math
+networkx
+numpy
+
+# 3D Sanity Visualizations
+plotly
+
+# Skeleton Graph Visualization Dashboard
+dash
+dash-cytoscape

@@ -237,7 +237,7 @@ def _single_move(current, rng):
 def simulated_annealing(K_ik, K_trg,
                         ik_leaves, ik_internals,
                         trg_leaves, trg_internals,
-                        T=1.0, alpha=0.995, T_min=1e-4,
+                        T=1.0, alpha=0.999, T_min=0.0000001,
                         iters_per_temp=1,
                         kinematic_filter=None,
                         seed=None,

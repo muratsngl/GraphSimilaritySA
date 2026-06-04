@@ -1,0 +1,362 @@
+"""
+Simulated Annealing for Skeleton Correspondence QAP.
+
+Maps every node of the (smaller) IK skeleton to a distinct node of the
+(larger-or-equal) Target skeleton, while strictly preserving leaf/internal
+topology and honoring an injective mapping with an "unmapped pool" for the
+extra Target nodes.
+
+Pipeline (matches the design spec):
+  Phase 1  Pre-computation & classification (affinity matrices + node classes)
+  Phase 2  State representation & injective initialization
+  Phase 3  Objective / energy function
+  Phase 4  Tri-state transposition engine (leaf swap / internal swap / injection)
+  Phase 5  The annealing loop (thermostat)
+
+Energy uses the negated QAP maximization objective so the loop minimizes:
+    E(Pi) = - sum_{i,j} K_ik[i, j] * K_trg[Pi(i), Pi(j)]
+"""
+
+import numpy as np
+
+
+# --------------------------------------------------------------------------- #
+# Phase 1: Pre-Computation & Classification
+# --------------------------------------------------------------------------- #
+
+def build_affinity(normalized_distance_matrix):
+    """K = e^{-D}. Rewards local matches, penalizes distant noise.
+
+    Expects a normalized [0, 1] distance matrix (see utils.normalize_distance_matrix).
+    """
+    D = np.asarray(normalized_distance_matrix, dtype=np.float64)
+    return np.exp(-D)
+
+
+def classify_nodes(adjacency_or_degrees):
+    """Split node indices into leaves (degree 1) and internals (degree > 1).
+
+    Accepts either:
+      - a 1D array/list of integer degrees indexed by node id, or
+      - a 2D adjacency / affinity-style matrix (degree inferred from nonzero
+        off-diagonal entries).
+
+    Returns (leaves, internals) as 1D int numpy arrays of node ids.
+    """
+    arr = np.asarray(adjacency_or_degrees)
+
+    if arr.ndim == 1:
+        degrees = arr.astype(int)
+    elif arr.ndim == 2:
+        mask = arr != 0
+        np.fill_diagonal(mask, False)
+        degrees = mask.sum(axis=1).astype(int)
+    else:
+        raise ValueError("Expected 1D degree array or 2D adjacency matrix.")
+
+    node_ids = np.arange(degrees.shape[0])
+    leaves = node_ids[degrees == 1]
+    internals = node_ids[degrees > 1]
+    return leaves.astype(int), internals.astype(int)
+
+
+# --------------------------------------------------------------------------- #
+# Phase 2: State Representation & Injective Initialization
+# --------------------------------------------------------------------------- #
+
+class SAState:
+    """Holds the active mapping plus the unmapped Target pools.
+
+    state[i] == target id assigned to IK node i.
+    Leaves map only to Target leaves; internals only to Target internals.
+    """
+
+    __slots__ = (
+        "state",
+        "ik_leaves", "ik_internals",
+        "unmapped_trg_leaves", "unmapped_trg_internals",
+    )
+
+    def __init__(self, n_ik):
+        self.state = np.full(n_ik, -1, dtype=int)
+        self.ik_leaves = None
+        self.ik_internals = None
+        self.unmapped_trg_leaves = []
+        self.unmapped_trg_internals = []
+
+    def copy(self):
+        new = SAState(self.state.shape[0])
+        new.state = self.state.copy()
+        new.ik_leaves = self.ik_leaves
+        new.ik_internals = self.ik_internals
+        new.unmapped_trg_leaves = list(self.unmapped_trg_leaves)
+        new.unmapped_trg_internals = list(self.unmapped_trg_internals)
+        return new
+
+
+def initialize_state(ik_leaves, ik_internals,
+                     trg_leaves, trg_internals,
+                     rng):
+    """Build a valid T=0 starting state obeying topological constraints.
+
+    Shuffle each Target class, assign the first len(ik_class) entries into the
+    state at the IK class indices, and stash the remainder in the unmapped pool.
+    """
+    ik_leaves = np.asarray(ik_leaves, dtype=int)
+    ik_internals = np.asarray(ik_internals, dtype=int)
+    trg_leaves = np.asarray(trg_leaves, dtype=int)
+    trg_internals = np.asarray(trg_internals, dtype=int)
+
+    if len(ik_leaves) > len(trg_leaves):
+        raise ValueError(
+            f"Not enough Target leaves ({len(trg_leaves)}) "
+            f"to cover IK leaves ({len(ik_leaves)})."
+        )
+    if len(ik_internals) > len(trg_internals):
+        raise ValueError(
+            f"Not enough Target internals ({len(trg_internals)}) "
+            f"to cover IK internals ({len(ik_internals)})."
+        )
+
+    n_ik = len(ik_leaves) + len(ik_internals)
+    s = SAState(n_ik)
+    s.ik_leaves = ik_leaves
+    s.ik_internals = ik_internals
+
+    # Leaves
+    shuffled_leaves = trg_leaves.copy()
+    rng.shuffle(shuffled_leaves)
+    s.state[ik_leaves] = shuffled_leaves[:len(ik_leaves)]
+    s.unmapped_trg_leaves = list(shuffled_leaves[len(ik_leaves):])
+
+    # Internals
+    shuffled_internals = trg_internals.copy()
+    rng.shuffle(shuffled_internals)
+    s.state[ik_internals] = shuffled_internals[:len(ik_internals)]
+    s.unmapped_trg_internals = list(shuffled_internals[len(ik_internals):])
+
+    return s
+
+
+# --------------------------------------------------------------------------- #
+# Phase 3: The Objective Function (Energy)
+# --------------------------------------------------------------------------- #
+
+def energy(state_array, K_ik, K_trg):
+    """E(Pi) = - sum_{i,j} K_ik[i, j] * K_trg[Pi(i), Pi(j)].
+
+    Negated so the annealing loop minimizes (maximizing the QAP objective).
+    """
+    reordered_K_trg = K_trg[np.ix_(state_array, state_array)]
+    match_matrix = K_ik * reordered_K_trg
+    return -np.sum(match_matrix)
+
+
+# --------------------------------------------------------------------------- #
+# Phase 4: The Tri-State Transposition Engine (Swapper)
+# --------------------------------------------------------------------------- #
+
+def propose_neighbor(current, rng, kinematic_filter=None, max_tries=32):
+    """Return a new SAState produced by exactly one constrained move.
+
+      Move A  Leaf swap        (swap two active IK-leaf assignments)
+      Move B  Internal swap    (swap two active IK-internal assignments)
+      Move C  Subgraph injection (swap an active Target node for an unmapped one)
+
+    Move choice is random but skips moves that are impossible for the current
+    state (e.g. injection with an empty pool). `kinematic_filter`, if given, is
+    called as filter(new_state_array) -> bool; a False result rejects the
+    proposal and another move is attempted. This is the hook for a future
+    "Kinematic Limb-Crossing Filter".
+    """
+    for _ in range(max_tries):
+        candidate = _single_move(current, rng)
+        if candidate is None:
+            continue
+        if kinematic_filter is not None and not kinematic_filter(candidate.state):
+            continue
+        return candidate
+    # Fell through: return an unchanged copy so the loop can keep cooling.
+    return current.copy()
+
+
+def _single_move(current, rng):
+    """Execute one randomly chosen move; return a new SAState or None."""
+    moves = []
+    if len(current.ik_leaves) >= 2:
+        moves.append("leaf_swap")
+    if len(current.ik_internals) >= 2:
+        moves.append("internal_swap")
+    if current.unmapped_trg_leaves or current.unmapped_trg_internals:
+        moves.append("injection")
+
+    if not moves:
+        return None
+
+    move = rng.choice(moves)
+    new = current.copy()
+
+    if move == "leaf_swap":
+        idx1, idx2 = rng.choice(current.ik_leaves, size=2, replace=False)
+        new.state[idx1], new.state[idx2] = new.state[idx2], new.state[idx1]
+
+    elif move == "internal_swap":
+        idx1, idx2 = rng.choice(current.ik_internals, size=2, replace=False)
+        new.state[idx1], new.state[idx2] = new.state[idx2], new.state[idx1]
+
+    else:  # injection
+        # Pick a class that actually has an unmapped node available.
+        classes = []
+        if current.unmapped_trg_leaves and len(current.ik_leaves) > 0:
+            classes.append("leaf")
+        if current.unmapped_trg_internals and len(current.ik_internals) > 0:
+            classes.append("internal")
+        if not classes:
+            return None
+
+        if rng.choice(classes) == "leaf":
+            ik_idx = int(rng.choice(current.ik_leaves))
+            pool = new.unmapped_trg_leaves
+        else:
+            ik_idx = int(rng.choice(current.ik_internals))
+            pool = new.unmapped_trg_internals
+
+        pop_pos = rng.integers(len(pool))
+        new_trg_val = pool.pop(pop_pos)
+        old_trg_val = new.state[ik_idx]
+        new.state[ik_idx] = new_trg_val
+        pool.append(int(old_trg_val))
+
+    return new
+
+
+# --------------------------------------------------------------------------- #
+# Phase 5: The Simulated Annealing Loop (Thermostat)
+# --------------------------------------------------------------------------- #
+
+def simulated_annealing(K_ik, K_trg,
+                        ik_leaves, ik_internals,
+                        trg_leaves, trg_internals,
+                        T=1.0, alpha=0.995, T_min=1e-4,
+                        iters_per_temp=1,
+                        kinematic_filter=None,
+                        seed=None,
+                        verbose=False):
+    """Run SA and return (best_state_array, best_energy, history).
+
+    Parameters
+    ----------
+    K_ik, K_trg : affinity matrices from build_affinity().
+    ik_leaves, ik_internals, trg_leaves, trg_internals : node-id arrays.
+    T, alpha, T_min : initial temperature, geometric cooling rate, stop threshold.
+    iters_per_temp : SA steps taken at each temperature before cooling.
+    kinematic_filter : optional callable(state_array) -> bool to reject moves.
+    seed : RNG seed for reproducibility.
+    verbose : print periodic progress.
+    """
+    rng = np.random.default_rng(seed)
+
+    current = initialize_state(ik_leaves, ik_internals,
+                               trg_leaves, trg_internals, rng)
+    current_energy = energy(current.state, K_ik, K_trg)
+
+    best = current.copy()
+    best_energy = current_energy
+
+    history = [current_energy]
+
+    while T > T_min:
+        for _ in range(iters_per_temp):
+            candidate = propose_neighbor(current, rng, kinematic_filter)
+            new_energy = energy(candidate.state, K_ik, K_trg)
+            delta_E = new_energy - current_energy
+
+            if delta_E < 0:
+                accept = True
+            else:
+                # exp(-delta/T); guard against overflow for large delta/T.
+                P = np.exp(-delta_E / T)
+                accept = rng.random() < P
+
+            if accept:
+                current = candidate
+                current_energy = new_energy
+                if current_energy < best_energy:
+                    best = current.copy()
+                    best_energy = current_energy
+
+        history.append(current_energy)
+        if verbose:
+            print(f"T={T:.5f}  E={current_energy:.6f}  best={best_energy:.6f}")
+
+        T *= alpha
+
+    return best.state, best_energy, history
+
+
+# --------------------------------------------------------------------------- #
+# Convenience: run straight from normalized distance matrices
+# --------------------------------------------------------------------------- #
+
+def run_from_distance_matrices(D_ik, D_trg, **sa_kwargs):
+    """End-to-end helper: take two normalized [0,1] distance matrices, build
+    affinities, classify nodes, and run SA. Returns the SA result tuple.
+
+    Node degrees are inferred from nonzero off-diagonal entries of each
+    distance matrix, so a 0 distance is treated as "not adjacent". If your
+    distance matrices are fully dense geodesics (no zeros off-diagonal), pass
+    explicit leaf/internal arrays via sa_kwargs instead.
+    """
+    K_ik = build_affinity(D_ik)
+    K_trg = build_affinity(D_trg)
+
+    if "ik_leaves" not in sa_kwargs:
+        ik_leaves, ik_internals = classify_nodes(D_ik)
+        sa_kwargs["ik_leaves"], sa_kwargs["ik_internals"] = ik_leaves, ik_internals
+    if "trg_leaves" not in sa_kwargs:
+        trg_leaves, trg_internals = classify_nodes(D_trg)
+        sa_kwargs["trg_leaves"], sa_kwargs["trg_internals"] = trg_leaves, trg_internals
+
+    return simulated_annealing(K_ik, K_trg, **sa_kwargs)
+
+
+# --------------------------------------------------------------------------- #
+# Smoke test
+# --------------------------------------------------------------------------- #
+
+if __name__ == "__main__":
+    rng = np.random.default_rng(0)
+
+    # Small synthetic example: 5 IK nodes, 7 Target nodes.
+    # IK: leaves {0, 4}, internals {1, 2, 3}
+    # Target: leaves {0, 4, 5}, internals {1, 2, 3, 6}
+    n_ik, n_trg = 5, 7
+    K_ik = build_affinity(rng.random((n_ik, n_ik)) * 0.5)
+    K_ik = (K_ik + K_ik.T) / 2
+    K_trg = build_affinity(rng.random((n_trg, n_trg)) * 0.5)
+    K_trg = (K_trg + K_trg.T) / 2
+
+    ik_leaves, ik_internals = np.array([0, 4]), np.array([1, 2, 3])
+    trg_leaves, trg_internals = np.array([0, 4, 5]), np.array([1, 2, 3, 6])
+
+    best_state, best_E, hist = simulated_annealing(
+        K_ik, K_trg,
+        ik_leaves, ik_internals,
+        trg_leaves, trg_internals,
+        T=1.0, alpha=0.995, T_min=1e-4,
+        seed=42, verbose=False,
+    )
+
+    print("Best mapping (IK node -> Target node):")
+    for ik_node, trg_node in enumerate(best_state):
+        kind = "leaf" if ik_node in ik_leaves else "internal"
+        print(f"  IK {ik_node} ({kind}) -> Target {trg_node}")
+    print(f"\nFinal energy: {best_E:.6f}")
+    print(f"Start energy: {hist[0]:.6f}")
+    print(f"Improvement:  {hist[0] - best_E:.6f}")
+
+    # Validate constraints on the output.
+    assert len(set(best_state)) == n_ik, "Mapping must be injective."
+    assert all(best_state[i] in trg_leaves for i in ik_leaves), "Leaf->leaf violated."
+    assert all(best_state[i] in trg_internals for i in ik_internals), "Internal->internal violated."
+    print("\nAll topological constraints satisfied.")

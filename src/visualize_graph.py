@@ -12,7 +12,7 @@ import dash_cytoscape as cyto
 
 from main import run_pipeline
 
-GLB_PATH = os.path.join(os.path.dirname(__file__), '..', 'assets', 'merged-model.glb')
+GLB_PATH = os.path.join(os.path.dirname(__file__), '..', 'assets', 'horse_riggedgame_ready.glb')
 
 print("Running pipeline...")
 try:

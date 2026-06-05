@@ -24,7 +24,7 @@ import numpy as np
 # Phase 1: Pre-Computation & Classification
 # --------------------------------------------------------------------------- #
 
-def build_affinity(normalized_distance_matrix, sigma=1.0):
+def build_affinity(normalized_distance_matrix, sigma=0.25):
     """K = e^{-D/sigma}. Rewards local matches, penalizes distant noise.
 
     Expects a normalized [0, 1] distance matrix (see utils.normalize_distance_matrix).
@@ -246,6 +246,7 @@ def simulated_annealing(K_ik, K_trg,
                         T=1.0, alpha=0.999, T_min=0.0000001,
                         iters_per_temp=1,
                         kinematic_filter=None,
+                        init_fn=None,
                         seed=None,
                         verbose=False):
     """Run SA and return (best_state_array, best_energy, history).
@@ -257,13 +258,20 @@ def simulated_annealing(K_ik, K_trg,
     T, alpha, T_min : initial temperature, geometric cooling rate, stop threshold.
     iters_per_temp : SA steps taken at each temperature before cooling.
     kinematic_filter : optional callable(state_array) -> bool to reject moves.
+    init_fn : optional callable(rng) -> SAState for the starting state. Required
+        when kinematic_filter constrains a small feasible region (a random start
+        would be infeasible and every proposal rejected). Defaults to the random
+        injective initializer.
     seed : RNG seed for reproducibility.
     verbose : print periodic progress.
     """
     rng = np.random.default_rng(seed)
 
-    current = initialize_state(ik_leaves, ik_internals,
-                               trg_leaves, trg_internals, rng)
+    if init_fn is not None:
+        current = init_fn(rng)
+    else:
+        current = initialize_state(ik_leaves, ik_internals,
+                                   trg_leaves, trg_internals, rng)
     current_energy = energy(current.state, K_ik, K_trg)
 
     best = current.copy()

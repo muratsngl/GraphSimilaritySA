@@ -7,7 +7,7 @@ from skeleton_extraction import build_qap_ready_graph
 from graph_modification import prune_leaves_iteratively
 from skeleton import build_human36m_graph
 from utils import normalize_distance_matrix
-from simulated_annealing import build_affinity, simulated_annealing_restarts
+from simulated_annealing import build_affinity, simulated_annealing_restarts, SAState
 
 # Kernel bandwidth for build_affinity (K = e^{-D/SIGMA}). With D max-normalized
 # to [0, 1], SIGMA < 1 keeps the near/far affinity contrast the QAP relies on.
@@ -87,52 +87,142 @@ def build_ik_rig():
     return G_ik, ik_ordered_nodes, D_ik
 
 
-def main():
-    target_path = os.path.join(os.path.dirname(__file__), '..', 'assets', 'merged-model.glb')
+DEFAULT_GLB_PATH = os.path.join(
+    os.path.dirname(__file__), '..', 'assets', 'horse_riggedgame_ready.glb')
 
-    try:
-        # --- IK rig (source): skeleton.py Human3.6M skeleton ---------------- #
-        G_ik, ik_ordered, D_ik = build_ik_rig()
 
-        # --- Target (destination): pruned skeleton from the GLB ------------- #
-        raw_G, pruned_G, trg_ordered, D_trg = run_pipeline(target_path)
+def build_hierarchy_constraints(G_ik, ik_ordered, pruned_G, trg_ordered):
+    """Build (kinematic_filter, init_fn) enforcing parent-above-child depth order.
 
-        # --- Classify nodes (positional) and build affinities --------------- #
-        ik_leaves, ik_internals = classify_positions(G_ik, ik_ordered)
-        trg_leaves, trg_internals = classify_positions(pruned_G, trg_ordered)
+    Depth = hops from the root (the unique in-degree-0 node) in each skeleton.
 
-        K_ik = build_affinity(D_ik, sigma=SIGMA)
-        K_trg = build_affinity(D_trg, sigma=SIGMA)
+    - kinematic_filter rejects any mapping where an IK child is assigned a target
+      node shallower-or-equal to its IK parent's target — i.e. an inverted limb.
+    - init_fn builds a hierarchy-feasible START by walking the IK tree root-down
+      and giving each joint the shallowest still-available target node (of its
+      class) strictly deeper than its parent's, so the filter passes by
+      construction. Without this, a random start is infeasible and every proposal
+      gets rejected (deadlock).
+    """
+    ikpos = {n: i for i, n in enumerate(ik_ordered)}
+    n_ik = len(ik_ordered)
 
-        print("\n=== STAGING ===")
-        print(f"IK rig:  {len(ik_ordered)} nodes "
-              f"({len(ik_leaves)} leaves, {len(ik_internals)} internals)")
-        print(f"Target:  {len(trg_ordered)} nodes "
-              f"({len(trg_leaves)} leaves, {len(trg_internals)} internals)")
+    UG_ik = G_ik.to_undirected()
+    ik_root = next(n for n in G_ik.nodes() if G_ik.in_degree(n) == 0)
+    ik_depth = nx.shortest_path_length(UG_ik, ik_root)
+    ik_bfs = sorted(G_ik.nodes(), key=lambda n: ik_depth[n])  # parents before children
+    ik_parent = {n: next(iter(G_ik.predecessors(n)), None) for n in G_ik.nodes()}
 
-        if len(ik_leaves) > len(trg_leaves) or len(ik_internals) > len(trg_internals):
-            raise ValueError(
-                "Target skeleton cannot cover the IK rig per class "
-                f"(need >= {len(ik_leaves)} leaves / {len(ik_internals)} internals, "
-                f"have {len(trg_leaves)} / {len(trg_internals)}). "
-                "Adjust pruning or relax the per-class constraint."
-            )
+    ik_is_leaf = {ikpos[n]: (UG_ik.degree(n) == 1) for n in G_ik.nodes()}
+    ik_leaves = np.array([p for p in range(n_ik) if ik_is_leaf[p]], dtype=int)
+    ik_internals = np.array([p for p in range(n_ik) if not ik_is_leaf[p]], dtype=int)
+    ik_edges = [(ikpos[u], ikpos[v]) for u, v in G_ik.edges()]
 
-        # --- Run Simulated Annealing (best of N restarts) ------------------- #
-        print("\n--- Running Simulated Annealing ---")
-        best_state, best_energy, history = simulated_annealing_restarts(
-            K_ik, K_trg,
-            ik_leaves, ik_internals,
-            trg_leaves, trg_internals,
-            n_restarts=20,
-            seed=71,
-            verbose=True,
-            T=1.0, alpha=0.99, T_min=0.00001,
-            iters_per_temp=100,
+    UG_trg = pruned_G.to_undirected()
+    trg_root = next(n for n in pruned_G.nodes() if pruned_G.in_degree(n) == 0)
+    depth_node = nx.shortest_path_length(UG_trg, trg_root)
+    n_trg = len(trg_ordered)
+    trg_depth = np.array([depth_node[trg_ordered[p]] for p in range(n_trg)])
+    trg_is_leaf = np.array([UG_trg.degree(trg_ordered[p]) == 1 for p in range(n_trg)])
+
+    def kinematic_filter(state):
+        for parent_pos, child_pos in ik_edges:
+            if trg_depth[state[parent_pos]] >= trg_depth[state[child_pos]]:
+                return False
+        return True
+
+    def init_fn(rng):
+        s = SAState(n_ik)
+        s.ik_leaves = ik_leaves
+        s.ik_internals = ik_internals
+        assigned_depth = {}
+        avail_leaf = [p for p in range(n_trg) if trg_is_leaf[p]]
+        avail_int = [p for p in range(n_trg) if not trg_is_leaf[p]]
+        for node in ik_bfs:
+            pos = ikpos[node]
+            parent = ik_parent[node]
+            min_d = 0 if parent is None else assigned_depth[ikpos[parent]] + 1
+            pool = avail_leaf if ik_is_leaf[pos] else avail_int
+            cands = [p for p in pool if trg_depth[p] >= min_d] or list(pool)
+            md = min(trg_depth[p] for p in cands)
+            best = [p for p in cands if trg_depth[p] == md]
+            choice = int(rng.choice(best))
+            s.state[pos] = choice
+            assigned_depth[pos] = int(trg_depth[choice])
+            pool.remove(choice)
+        s.unmapped_trg_leaves = list(avail_leaf)
+        s.unmapped_trg_internals = list(avail_int)
+        return s
+
+    return kinematic_filter, init_fn
+
+
+def run_sa_pipeline(glb_path=DEFAULT_GLB_PATH, n_restarts=20, seed=71,
+                    sigma=SIGMA, verbose=False):
+    """Stage both skeletons and solve the correspondence QAP with SA.
+
+    Returns a dict with everything needed to report or visualize the result:
+      G_ik, ik_ordered, raw_G, pruned_G, trg_ordered,
+      ik_leaves, ik_internals, best_state, best_energy, history.
+
+    Shared by main() (console report) and visualize_mapping.py (drawing) so the
+    two never drift apart on parameters.
+    """
+    # --- IK rig (source): skeleton.py Human3.6M skeleton -------------------- #
+    G_ik, ik_ordered, D_ik = build_ik_rig()
+
+    # --- Target (destination): pruned skeleton from the GLB ----------------- #
+    raw_G, pruned_G, trg_ordered, D_trg = run_pipeline(glb_path)
+
+    # --- Classify nodes (positional) and build affinities ------------------- #
+    ik_leaves, ik_internals = classify_positions(G_ik, ik_ordered)
+    trg_leaves, trg_internals = classify_positions(pruned_G, trg_ordered)
+
+    K_ik = build_affinity(D_ik, sigma=sigma)
+    K_trg = build_affinity(D_trg, sigma=sigma)
+
+    if len(ik_leaves) > len(trg_leaves) or len(ik_internals) > len(trg_internals):
+        raise ValueError(
+            "Target skeleton cannot cover the IK rig per class "
+            f"(need >= {len(ik_leaves)} leaves / {len(ik_internals)} internals, "
+            f"have {len(trg_leaves)} / {len(trg_internals)}). "
+            "Adjust pruning or relax the per-class constraint."
         )
 
-        # --- Report the mapping (positions -> ids -> names) ----------------- #
-        ik_leaf_set = set(ik_leaves.tolist())
+    kinematic_filter, init_fn = build_hierarchy_constraints(
+        G_ik, ik_ordered, pruned_G, trg_ordered)
+
+    best_state, best_energy, history = simulated_annealing_restarts(
+        K_ik, K_trg,
+        ik_leaves, ik_internals,
+        trg_leaves, trg_internals,
+        n_restarts=n_restarts,
+        seed=seed,
+        verbose=verbose,
+        kinematic_filter=kinematic_filter,
+        init_fn=init_fn,
+        T=1.0, alpha=0.99, T_min=0.00001,
+        iters_per_temp=100,
+    )
+
+    return {
+        'G_ik': G_ik, 'ik_ordered': ik_ordered,
+        'raw_G': raw_G, 'pruned_G': pruned_G, 'trg_ordered': trg_ordered,
+        'ik_leaves': ik_leaves, 'ik_internals': ik_internals,
+        'best_state': best_state, 'best_energy': best_energy, 'history': history,
+    }
+
+
+def main():
+    try:
+        print("\n=== STAGING + SIMULATED ANNEALING ===")
+        r = run_sa_pipeline(verbose=True)
+
+        G_ik, ik_ordered = r['G_ik'], r['ik_ordered']
+        pruned_G, trg_ordered = r['pruned_G'], r['trg_ordered']
+        best_state, best_energy, history = r['best_state'], r['best_energy'], r['history']
+
+        ik_leaf_set = set(r['ik_leaves'].tolist())
         print("\n=== BEST MAPPING (IK rig -> Target) ===")
         for ik_pos, trg_pos in enumerate(best_state):
             ik_id = ik_ordered[ik_pos]
@@ -140,7 +230,7 @@ def main():
             ik_name = G_ik.nodes[ik_id].get('name', str(ik_id))
             trg_name = pruned_G.nodes[trg_id].get('name', str(trg_id))
             kind = "leaf" if ik_pos in ik_leaf_set else "internal"
-            print(f"  {ik_name:<12s} ({kind:<8s}) -> {trg_name}")
+            print(f"  {ik_pos:>2}  {ik_name:<12s} ({kind:<8s}) -> {trg_name}")
 
         print("\n=== SA SUMMARY ===")
         print(f"Start energy:  {history[0]:.6f}")

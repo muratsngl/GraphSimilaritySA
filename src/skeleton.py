@@ -106,6 +106,36 @@ H36M_BONE_LENGTHS = {
 }
  
  
+# Canonical front-view rest-pose coordinates (x = right, y = up; ~metres) for
+# drawing the rig faithfully as a stick figure. T-pose: arms out, legs down.
+# Character-right joints sit at negative x (viewer's left), matching a person
+# facing the camera. Used only by the physical-layout visualizer.
+H36M_REST_POSITIONS = {
+    0:  (0.00,  0.00),   # Hip (pelvis)
+    1:  (-0.13, 0.00),   # RHip
+    2:  (-0.13, -0.44),  # RKnee
+    3:  (-0.13, -0.89),  # RFoot
+    4:  (0.13,  0.00),   # LHip
+    5:  (0.13,  -0.44),  # LKnee
+    6:  (0.13,  -0.89),  # LFoot
+    7:  (0.00,  0.23),   # Spine
+    8:  (0.00,  0.46),   # Thorax
+    9:  (0.00,  0.58),   # Neck
+    10: (0.00,  0.69),   # Head
+    11: (0.15,  0.46),   # LShoulder
+    12: (0.43,  0.46),   # LElbow
+    13: (0.68,  0.46),   # LWrist
+    14: (-0.15, 0.46),   # RShoulder
+    15: (-0.43, 0.46),   # RElbow
+    16: (-0.68, 0.46),   # RWrist
+}
+
+
+def h36m_rest_positions():
+    """Return {joint_id: (x, y)} front-view rest-pose coords for drawing."""
+    return dict(H36M_REST_POSITIONS)
+
+
 def build_human36m_graph(bone_lengths=None):
     """Return the Human3.6M 17-joint skeleton as a networkx DiGraph.
  

@@ -102,7 +102,7 @@ def build_ik_rig():
 
 
 DEFAULT_GLB_PATH = os.path.join(
-    os.path.dirname(__file__), '..', 'assets', 'merged-model.glb')
+    os.path.dirname(__file__), '..', 'assets', 'Dozy.glb')
 
 
 def build_hierarchy_constraints(G_ik, ik_ordered, pruned_G, trg_ordered):

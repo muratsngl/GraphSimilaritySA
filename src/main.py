@@ -13,6 +13,12 @@ from simulated_annealing import build_affinity, simulated_annealing_restarts, SA
 # to [0, 1], SIGMA < 1 keeps the near/far affinity contrast the QAP relies on.
 SIGMA = 0.1
 
+# Weight of the repellent term in the energy function.
+# Penalises IK-distant pairs landing on target-close nodes (e.g. several torso
+# joints clustering on adjacent spinal bones). 0.0 = plain QAP; start at 0.2
+# and raise if the solver still produces spine-clustered results.
+LAMBDA_REPEL = 0.5
+
 
 # --------------------------------------------------------------------------- #
 # Shared graph -> QAP helpers
@@ -88,7 +94,7 @@ def build_ik_rig():
 
 
 DEFAULT_GLB_PATH = os.path.join(
-    os.path.dirname(__file__), '..', 'assets', 'horse_riggedgame_ready.glb')
+    os.path.dirname(__file__), '..', 'assets', 'merged-model.glb')
 
 
 def build_hierarchy_constraints(G_ik, ik_ordered, pruned_G, trg_ordered):
@@ -157,8 +163,8 @@ def build_hierarchy_constraints(G_ik, ik_ordered, pruned_G, trg_ordered):
     return kinematic_filter, init_fn
 
 
-def run_sa_pipeline(glb_path=DEFAULT_GLB_PATH, n_restarts=20, seed=71,
-                    sigma=SIGMA, verbose=False):
+def run_sa_pipeline(glb_path=DEFAULT_GLB_PATH, n_restarts=7, seed=91,
+                    sigma=SIGMA, lambda_repel=LAMBDA_REPEL, verbose=False):
     """Stage both skeletons and solve the correspondence QAP with SA.
 
     Returns a dict with everything needed to report or visualize the result:
@@ -203,6 +209,7 @@ def run_sa_pipeline(glb_path=DEFAULT_GLB_PATH, n_restarts=20, seed=71,
         init_fn=init_fn,
         T=1.0, alpha=0.99, T_min=0.00001,
         iters_per_temp=100,
+        lambda_repel=lambda_repel,
     )
 
     return {

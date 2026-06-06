@@ -13,8 +13,15 @@ Pipeline (matches the design spec):
   Phase 4  Tri-state transposition engine (leaf swap / internal swap / injection)
   Phase 5  The annealing loop (thermostat)
 
-Energy uses the negated QAP maximization objective so the loop minimizes:
-    E(Pi) = - sum_{i,j} K_ik[i, j] * K_trg[Pi(i), Pi(j)]
+Energy uses the negated QAP maximization objective plus an optional repellent
+term so the loop minimizes:
+
+    E(Pi) = -sum_{i,j} K_ik[i,j] * K_trg[Pi(i),Pi(j)]
+            + lambda * sum_{i,j} (1 - K_ik[i,j]) * K_trg[Pi(i),Pi(j)]
+
+The repellent term penalises IK-distant pairs that land on target-close nodes,
+preventing multiple IK joints from clustering onto adjacent target bones.
+lambda_repel=0.0 recovers the plain QAP.
 """
 
 import numpy as np
@@ -24,7 +31,7 @@ import numpy as np
 # Phase 1: Pre-Computation & Classification
 # --------------------------------------------------------------------------- #
 
-def build_affinity(normalized_distance_matrix, sigma=0.25):
+def build_affinity(normalized_distance_matrix, sigma=0.1):
     """K = e^{-D/sigma}. Rewards local matches, penalizes distant noise.
 
     Expects a normalized [0, 1] distance matrix (see utils.normalize_distance_matrix).
@@ -148,14 +155,23 @@ def initialize_state(ik_leaves, ik_internals,
 # Phase 3: The Objective Function (Energy)
 # --------------------------------------------------------------------------- #
 
-def energy(state_array, K_ik, K_trg):
-    """E(Pi) = - sum_{i,j} K_ik[i, j] * K_trg[Pi(i), Pi(j)].
+def energy(state_array, K_ik, K_trg, lambda_repel=0.0):
+    """E = -sum K_ik * K_trg  +  lambda * sum (1 - K_ik) * K_trg.
 
-    Negated so the annealing loop minimizes (maximizing the QAP objective).
+    Attraction term: rewards IK-close pairs mapping to target-close pairs.
+    Repellent term: penalises IK-distant pairs (large 1 - K_ik) landing on
+    target-close nodes (large K_trg). Discourages clustering — e.g. several
+    torso joints piling onto adjacent spinal target bones, when a limb-tip
+    target node farther away would incur a much smaller repellent penalty.
+
+    lambda_repel=0.0 recovers the original QAP exactly.
     """
     reordered_K_trg = K_trg[np.ix_(state_array, state_array)]
-    match_matrix = K_ik * reordered_K_trg
-    return -np.sum(match_matrix)
+    attraction = np.sum(K_ik * reordered_K_trg)
+    if lambda_repel == 0.0:
+        return -attraction
+    repellent = np.sum((1.0 - K_ik) * reordered_K_trg)
+    return -attraction + lambda_repel * repellent
 
 
 # --------------------------------------------------------------------------- #
@@ -245,6 +261,7 @@ def simulated_annealing(K_ik, K_trg,
                         trg_leaves, trg_internals,
                         T=1.0, alpha=0.999, T_min=0.0000001,
                         iters_per_temp=1,
+                        lambda_repel=0.0,
                         kinematic_filter=None,
                         init_fn=None,
                         seed=None,
@@ -257,6 +274,7 @@ def simulated_annealing(K_ik, K_trg,
     ik_leaves, ik_internals, trg_leaves, trg_internals : node-id arrays.
     T, alpha, T_min : initial temperature, geometric cooling rate, stop threshold.
     iters_per_temp : SA steps taken at each temperature before cooling.
+    lambda_repel : weight of the repellent term (see energy()). 0.0 = plain QAP.
     kinematic_filter : optional callable(state_array) -> bool to reject moves.
     init_fn : optional callable(rng) -> SAState for the starting state. Required
         when kinematic_filter constrains a small feasible region (a random start
@@ -272,7 +290,7 @@ def simulated_annealing(K_ik, K_trg,
     else:
         current = initialize_state(ik_leaves, ik_internals,
                                    trg_leaves, trg_internals, rng)
-    current_energy = energy(current.state, K_ik, K_trg)
+    current_energy = energy(current.state, K_ik, K_trg, lambda_repel)
 
     best = current.copy()
     best_energy = current_energy
@@ -282,7 +300,7 @@ def simulated_annealing(K_ik, K_trg,
     while T > T_min:
         for _ in range(iters_per_temp):
             candidate = propose_neighbor(current, rng, kinematic_filter)
-            new_energy = energy(candidate.state, K_ik, K_trg)
+            new_energy = energy(candidate.state, K_ik, K_trg, lambda_repel)
             delta_E = new_energy - current_energy
 
             if delta_E < 0:
@@ -311,7 +329,7 @@ def simulated_annealing(K_ik, K_trg,
 def simulated_annealing_restarts(K_ik, K_trg,
                                  ik_leaves, ik_internals,
                                  trg_leaves, trg_internals,
-                                 n_restarts=20,
+                                 n_restarts=2,
                                  seed=None,
                                  verbose=False,
                                  **sa_kwargs):

@@ -31,7 +31,7 @@ import dash
 from dash import html
 import dash_cytoscape as cyto
 
-from main import run_sa_pipeline, DEFAULT_GLB_PATH
+from main import run_sa_pipeline, DEFAULT_GLB_PATH, SIGMA, LAMBDA_REPEL, GAMMA_PENALTY
 from skeleton import h36m_rest_positions
 
 GLB_PATH = DEFAULT_GLB_PATH
@@ -318,10 +318,15 @@ app.layout = html.Div(
     children=[
         html.Div(
             style={'padding': '8px 20px', 'borderBottom': '1px solid #21262d',
-                   'backgroundColor': '#161b22', 'flexShrink': 0},
-            children=html.Span("Skeleton Mapping Viewer · physical coordinates",
-                               style={'color': '#58a6ff', 'fontSize': '13px',
-                                      'fontFamily': 'monospace', 'fontWeight': 'bold'})),
+                   'backgroundColor': '#161b22', 'flexShrink': 0,
+                   'display': 'flex', 'alignItems': 'center', 'gap': '24px'},
+            children=[
+                html.Span("Skeleton Mapping Viewer · physical coordinates",
+                          style={'color': '#58a6ff', 'fontSize': '13px',
+                                 'fontFamily': 'monospace', 'fontWeight': 'bold'}),
+                html.Span(f"σ={SIGMA}  λ={LAMBDA_REPEL}  γ={GAMMA_PENALTY}  ·  E={R['best_energy']:.4f}",
+                          style={'color': '#8b949e', 'fontSize': '12px', 'fontFamily': 'monospace'}),
+            ]),
 
         # Row 1: raw | pruned (target skeleton, real coords)
         html.Div(style=ROW_STYLE, children=[

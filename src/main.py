@@ -11,13 +11,21 @@ from simulated_annealing import build_affinity, simulated_annealing_restarts, SA
 
 # Kernel bandwidth for build_affinity (K = e^{-D/SIGMA}). With D max-normalized
 # to [0, 1], SIGMA < 1 keeps the near/far affinity contrast the QAP relies on.
-SIGMA = 0.1
+SIGMA = 0.2
 
 # Weight of the repellent term in the energy function.
 # Penalises IK-distant pairs landing on target-close nodes (e.g. several torso
 # joints clustering on adjacent spinal bones). 0.0 = plain QAP; start at 0.2
 # and raise if the solver still produces spine-clustered results.
 LAMBDA_REPEL = 0.5
+
+# Scale factor for the ancestor-ordering soft penalty.
+# Each violated IK edge (where the IK child's assigned target is not a descendant
+# of the IK parent's assigned target) adds gamma to the energy. Set large enough
+# that one violation outweighs a typical per-pair QAP gain, but not so large that
+# the SA freezes at high temperature — the annealing schedule handles the gradual
+# enforcement.
+GAMMA_PENALTY = 3.0
 
 
 # --------------------------------------------------------------------------- #
@@ -98,27 +106,29 @@ DEFAULT_GLB_PATH = os.path.join(
 
 
 def build_hierarchy_constraints(G_ik, ik_ordered, pruned_G, trg_ordered):
-    """Build (kinematic_filter, init_fn) enforcing ancestor-based depth ordering.
+    """Build (ancestor_penalty_fn, init_fn) for soft ancestor-ordering enforcement.
 
-    The old depth-only filter checked that the target node assigned to an IK child
-    had a higher hop count from the target root than the target node assigned to its
-    IK parent. That is necessary but not sufficient: two nodes can be correctly
-    depth-ordered yet sit on completely different branches of the target tree (e.g.
-    one on the left-leg chain, one on the right-arm chain), producing a kinematically
-    nonsensical assignment that the filter would silently pass.
+    Hard filters on SA move proposals (kinematic_filter in propose_neighbor) kill
+    exploration: leaf-swap and internal-swap moves almost always land on a different
+    target branch, so max_tries burns out and every step becomes a no-op. The SA
+    never mixes.
 
-    The corrected filter checks proper ancestry: for every IK edge (parent→child),
-    the target node assigned to the IK parent must lie on the root-to-child path in
-    the target tree. This rules out all cross-branch assignments.
+    Instead, ancestor violations are encoded as a SOFT ENERGY PENALTY, scaled by
+    gamma_penalty. The annealing schedule then does its job: at high T the SA crosses
+    violations freely to explore; at low T the penalty dominates and locks in
+    structurally valid solutions.
 
-    - trg_ancestors[p] = frozenset of target positions that are proper ancestors of p
-      (path from target root to p, excluding p itself). Precomputed once.
-    - kinematic_filter: state[parent_pos] must be in trg_ancestors[state[child_pos]]
-      for every IK edge.
-    - init_fn: walks IK nodes root-first (BFS), assigning each node the shallowest
-      available target that is a descendant of its IK parent's assignment. Falls back
-      to any available node of the correct class if no ancestor-consistent descendant
-      exists (handles skeleton topology mismatches gracefully).
+    ancestor_penalty_fn(state) returns the number of IK edges whose ancestor
+    constraint is violated in the current state. Combined with gamma_penalty in the
+    SA loop: effective_energy = QAP_energy + gamma_penalty * ancestor_penalty_fn(state).
+
+    trg_ancestors[p] = frozenset of target positions on the root→p path, excluding p.
+    IK edge (parent→child) is violated when state[parent] ∉ trg_ancestors[state[child]].
+
+    init_fn still tries to build an ancestor-consistent start by walking the IK tree
+    root-first and assigning each node the shallowest available descendant of its IK
+    parent's assignment. Falls back to any available node of the right class on
+    topology mismatches (the penalty will guide the SA to repair violations).
     """
     ikpos = {n: i for i, n in enumerate(ik_ordered)}
     n_ik = len(ik_ordered)
@@ -140,22 +150,21 @@ def build_hierarchy_constraints(G_ik, ik_ordered, pruned_G, trg_ordered):
     trg_pos_of = {trg_ordered[p]: p for p in range(n_trg)}
     trg_is_leaf = np.array([UG_trg.degree(trg_ordered[p]) == 1 for p in range(n_trg)])
 
-    # Kept for tiebreaking in init_fn only (prefer shallowest valid candidate).
     depth_node = nx.shortest_path_length(UG_trg, trg_root)
     trg_depth  = np.array([depth_node[trg_ordered[p]] for p in range(n_trg)])
 
-    # Proper ancestor sets. For each target position p, trg_ancestors[p] is the
-    # frozenset of positions on the path root→p, excluding p itself.
     trg_ancestors = {}
     for p in range(n_trg):
         path = nx.shortest_path(UG_trg, trg_root, trg_ordered[p])
         trg_ancestors[p] = frozenset(trg_pos_of[n] for n in path[:-1])
 
-    def kinematic_filter(state):
+    def ancestor_penalty_fn(state):
+        """Count IK edges whose ancestor constraint is violated."""
+        violations = 0
         for parent_pos, child_pos in ik_edges:
             if state[parent_pos] not in trg_ancestors[state[child_pos]]:
-                return False
-        return True
+                violations += 1
+        return float(violations)
 
     def init_fn(rng):
         s = SAState(n_ik)
@@ -185,11 +194,12 @@ def build_hierarchy_constraints(G_ik, ik_ordered, pruned_G, trg_ordered):
         s.unmapped_trg_internals = list(avail_int)
         return s
 
-    return kinematic_filter, init_fn
+    return ancestor_penalty_fn, init_fn
 
 
 def run_sa_pipeline(glb_path=DEFAULT_GLB_PATH, n_restarts=7, seed=91,
-                    sigma=SIGMA, lambda_repel=LAMBDA_REPEL, verbose=False):
+                    sigma=SIGMA, lambda_repel=LAMBDA_REPEL,
+                    gamma_penalty=GAMMA_PENALTY, verbose=False):
     """Stage both skeletons and solve the correspondence QAP with SA.
 
     Returns a dict with everything needed to report or visualize the result:
@@ -220,7 +230,7 @@ def run_sa_pipeline(glb_path=DEFAULT_GLB_PATH, n_restarts=7, seed=91,
             "Adjust pruning or relax the per-class constraint."
         )
 
-    kinematic_filter, init_fn = build_hierarchy_constraints(
+    ancestor_penalty_fn, init_fn = build_hierarchy_constraints(
         G_ik, ik_ordered, pruned_G, trg_ordered)
 
     best_state, best_energy, history = simulated_annealing_restarts(
@@ -230,8 +240,10 @@ def run_sa_pipeline(glb_path=DEFAULT_GLB_PATH, n_restarts=7, seed=91,
         n_restarts=n_restarts,
         seed=seed,
         verbose=verbose,
-        kinematic_filter=kinematic_filter,
+        kinematic_filter=None,
         init_fn=init_fn,
+        penalty_fn=ancestor_penalty_fn,
+        gamma_penalty=gamma_penalty,
         T=1.0, alpha=0.99, T_min=0.00001,
         iters_per_temp=100,
         lambda_repel=lambda_repel,

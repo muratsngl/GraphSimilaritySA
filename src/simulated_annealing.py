@@ -13,15 +13,15 @@ Pipeline (matches the design spec):
   Phase 4  Tri-state transposition engine (leaf swap / internal swap / injection)
   Phase 5  The annealing loop (thermostat)
 
-Energy uses the negated QAP maximization objective plus an optional repellent
-term so the loop minimizes:
+Energy uses the negated QAP maximization objective plus an optional mismatch
+penalty term so the loop minimizes:
 
     E(Pi) = -sum_{i,j} K_ik[i,j] * K_trg[Pi(i),Pi(j)]
-            + lambda * sum_{i,j} (1 - K_ik[i,j]) * K_trg[Pi(i),Pi(j)]
+            + lambda * sum_{i,j} |K_ik[i,j] - K_trg[Pi(i),Pi(j)]|
 
-The repellent term penalises IK-distant pairs that land on target-close nodes,
-preventing multiple IK joints from clustering onto adjacent target bones.
-lambda_repel=0.0 recovers the plain QAP.
+The mismatch term penalises any asymmetry between IK affinity and target
+affinity — both far-IK-on-close-target (clustering) and close-IK-on-far-target
+(chain skipping) incur the same cost. lambda_repel=0.0 recovers the plain QAP.
 """
 
 import numpy as np
@@ -156,13 +156,13 @@ def initialize_state(ik_leaves, ik_internals,
 # --------------------------------------------------------------------------- #
 
 def energy(state_array, K_ik, K_trg, lambda_repel=0.0):
-    """E = -sum K_ik * K_trg  +  lambda * sum (1 - K_ik) * K_trg.
+    """E = -sum K_ik * K_trg  +  lambda * sum |K_ik - K_trg_reordered|.
 
     Attraction term: rewards IK-close pairs mapping to target-close pairs.
-    Repellent term: penalises IK-distant pairs (large 1 - K_ik) landing on
-    target-close nodes (large K_trg). Discourages clustering — e.g. several
-    torso joints piling onto adjacent spinal target bones, when a limb-tip
-    target node farther away would incur a much smaller repellent penalty.
+    Mismatch term: penalises any asymmetry between IK affinity and target
+    affinity — both far-IK-on-close-target (spine clustering) and
+    close-IK-on-far-target (chain skipping) cost the same lambda per pair.
+    The four quadrants: close-close -> 0, far-far -> 0, either mismatch -> ~1.
 
     lambda_repel=0.0 recovers the original QAP exactly.
     """
@@ -170,8 +170,8 @@ def energy(state_array, K_ik, K_trg, lambda_repel=0.0):
     attraction = np.sum(K_ik * reordered_K_trg)
     if lambda_repel == 0.0:
         return -attraction
-    repellent = np.sum((1.0 - K_ik) * reordered_K_trg)
-    return -attraction + lambda_repel * repellent
+    mismatch = np.sum(np.abs(K_ik - reordered_K_trg))
+    return -attraction + lambda_repel * mismatch
 
 
 # --------------------------------------------------------------------------- #
@@ -262,6 +262,8 @@ def simulated_annealing(K_ik, K_trg,
                         T=1.0, alpha=0.999, T_min=0.0000001,
                         iters_per_temp=1,
                         lambda_repel=0.0,
+                        penalty_fn=None,
+                        gamma_penalty=0.0,
                         kinematic_filter=None,
                         init_fn=None,
                         seed=None,
@@ -275,22 +277,34 @@ def simulated_annealing(K_ik, K_trg,
     T, alpha, T_min : initial temperature, geometric cooling rate, stop threshold.
     iters_per_temp : SA steps taken at each temperature before cooling.
     lambda_repel : weight of the repellent term (see energy()). 0.0 = plain QAP.
-    kinematic_filter : optional callable(state_array) -> bool to reject moves.
-    init_fn : optional callable(rng) -> SAState for the starting state. Required
-        when kinematic_filter constrains a small feasible region (a random start
-        would be infeasible and every proposal rejected). Defaults to the random
-        injective initializer.
+    penalty_fn : optional callable(state_array) -> float returning a structural
+        violation count or score. Added to the energy as gamma_penalty * penalty_fn(state).
+        Encodes soft constraints (e.g. ancestor ordering) that should guide but not
+        hard-block exploration. At high T the SA crosses violations freely; at low T
+        the penalty dominates and locks in valid solutions.
+    gamma_penalty : scale factor for penalty_fn. Set large enough that one violation
+        outweighs a typical per-pair QAP gain.
+    kinematic_filter : optional callable(state_array) -> bool for hard move rejection.
+        Reserved for constraints that must never be violated (e.g. type class).
+        Do NOT use for ancestor/depth ordering — that kills exploration.
+    init_fn : optional callable(rng) -> SAState for the starting state.
     seed : RNG seed for reproducibility.
     verbose : print periodic progress.
     """
     rng = np.random.default_rng(seed)
+
+    def effective_energy(state):
+        e = energy(state, K_ik, K_trg, lambda_repel)
+        if penalty_fn is not None and gamma_penalty != 0.0:
+            e += gamma_penalty * penalty_fn(state)
+        return e
 
     if init_fn is not None:
         current = init_fn(rng)
     else:
         current = initialize_state(ik_leaves, ik_internals,
                                    trg_leaves, trg_internals, rng)
-    current_energy = energy(current.state, K_ik, K_trg, lambda_repel)
+    current_energy = effective_energy(current.state)
 
     best = current.copy()
     best_energy = current_energy
@@ -300,7 +314,7 @@ def simulated_annealing(K_ik, K_trg,
     while T > T_min:
         for _ in range(iters_per_temp):
             candidate = propose_neighbor(current, rng, kinematic_filter)
-            new_energy = energy(candidate.state, K_ik, K_trg, lambda_repel)
+            new_energy = effective_energy(candidate.state)
             delta_E = new_energy - current_energy
 
             if delta_E < 0:

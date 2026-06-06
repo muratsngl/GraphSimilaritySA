@@ -9,23 +9,45 @@ Ranked within each section by impact on result quality.
 
 | Parameter | Defined in | Default | Active value | Role |
 |-----------|-----------|---------|-------------|------|
-| `sigma` (σ) | `simulated_annealing.py:27` `build_affinity(sigma=0.1)` | `0.1` | **`1`** (`SIGMA` in `main.py`) | Kernel bandwidth in `K = e^{-D/σ}`. With D max-normalized to [0,1], controls near/far contrast in the affinity matrix. Smaller σ → sharper contrast. The entire QAP signal sensitivity lives here. |
+| `sigma` (σ) | `simulated_annealing.py` `build_affinity(sigma=0.1)` | `0.1` | **`1`** (`SIGMA` in `main.py`) | Kernel bandwidth in `K = e^{-D/σ}`. With D max-normalized to [0,1], controls near/far contrast in the affinity matrix. Smaller σ → sharper contrast. The entire QAP signal sensitivity lives here. |
 
 ---
 
-## 2. Repellent Term
+## 2. Mismatch Penalty
 
 | Parameter | Defined in | Default | Active value | Role |
 |-----------|-----------|---------|-------------|------|
-| `lambda_repel` (λ) | `simulated_annealing.py` `energy(lambda_repel=0.0)` / `simulated_annealing(lambda_repel=0.0)` | `0.0` | **`0.2`** (`LAMBDA_REPEL` in `main.py`) | Weight of the repellent term `λ · Σ (1 − K_ik) · K_trg`. Penalises IK-distant pairs landing on target-close nodes. 0.0 = plain QAP; raise if the solver clusters joints onto adjacent spine/torso bones. |
+| `lambda_repel` (λ) | `simulated_annealing.py` `energy(lambda_repel=0.0)` / `simulated_annealing(lambda_repel=0.0)` | `0.0` | **`0.3`** (`LAMBDA_REPEL` in `main.py`) | Weight of the symmetric mismatch term `λ · Σ \|K_ik − K_trg\|`. Penalises any affinity asymmetry regardless of direction: far-IK-on-close-target (spine clustering) and close-IK-on-far-target (chain skipping) both cost the same λ per pair. 0.0 = plain QAP. |
 
-> Full energy: `E = -Σ K_ik · K_trg  +  λ · Σ (1 − K_ik) · K_trg`  
-> Equivalently: `E = -(1+λ) · Σ K_ik · K_trg  +  λ · Σ K_trg[Π(i),Π(j)]`  
-> The second form shows the repellent reduces to minimising total pairwise target affinity — maximising spread of assignments across the target skeleton.
+> Full energy: `E = -Σ K_ik · K_trg  +  λ · Σ |K_ik − K_trg[Π(i),Π(j)]|`
+>
+> Four-quadrant cost (K ≈ 0 or 1 at small σ):
+>
+> |  | target-close | target-far |
+> |--|--|--|
+> | **IK-close** | \|1−1\| ≈ 0 ✓ | \|1−0\| = 1 penalised ✓ |
+> | **IK-far** | \|0−1\| = 1 penalised ✓ | \|0−0\| ≈ 0 ✓ |
+>
+> **Tuning:** raise λ if spine clustering or leg chain-skipping persists; lower if close joints scatter.
 
 ---
 
-## 3. Cooling Schedule
+## 3. Ancestor Ordering — Soft Penalty
+
+| Parameter | Defined in | Default | Active value | Role |
+|-----------|-----------|---------|-------------|------|
+| `gamma_penalty` (γ) | `simulated_annealing.py` `simulated_annealing(gamma_penalty=0.0)` | `0.0` | **`5.0`** (`GAMMA_PENALTY` in `main.py`) | Scale factor for `ancestor_penalty_fn(state)`, which counts IK edges whose ancestor constraint is violated. Each violated edge adds `gamma_penalty` to the effective energy. |
+
+> Full effective energy: `E_eff = E_QAP + γ · violations(state)`  
+> Where `violations` = number of IK edges where the assigned target-parent is **not** a proper ancestor of the assigned target-child in the target tree.  
+>
+> **Why soft, not hard:** A hard gate on proposals kills SA exploration — leaf/internal swaps almost always land on a different target branch, burning through `max_tries` and producing no-op steps. The soft penalty lets the SA cross violations at high T and converge to valid solutions at low T, which is the intended SA behaviour.  
+>
+> **Tuning:** `gamma_penalty` should be large enough that one violation outweighs a typical per-pair QAP gain (~1 energy unit with σ=1). Start at 5.0; raise if the final mapping still has cross-branch assignments.
+
+---
+
+## 4. Cooling Schedule
 
 | Parameter | Defined in | Default | Active value | Role |
 |-----------|-----------|---------|-------------|------|
@@ -39,7 +61,7 @@ Ranked within each section by impact on result quality.
 
 ---
 
-## 4. Multi-Restart
+## 5. Multi-Restart
 
 | Parameter | Defined in | Default | Active value | Role |
 |-----------|-----------|---------|-------------|------|
@@ -48,24 +70,11 @@ Ranked within each section by impact on result quality.
 
 ---
 
-## 5. Neighbor Proposal
+## 6. Neighbor Proposal
 
 | Parameter | Defined in | Default | Role |
 |-----------|-----------|---------|------|
-| `max_tries` | `simulated_annealing.py` `propose_neighbor(max_tries=32)` | `32` | Max proposal attempts per step before falling back to a no-op copy. Guards against the kinematic filter rejecting everything in a tight feasible region. |
-
----
-
-## 6. Kinematic Ancestor Filter
-
-Hardcoded constraints in `main.py:build_hierarchy_constraints`. Not exposed as function parameters.
-
-| Constraint | Code | Role |
-|------------|------|------|
-| Proper ancestry | `state[parent_pos] in trg_ancestors[state[child_pos]]` | For every IK edge (parent→child), the target node assigned to the IK parent must be a **proper ancestor** of the target node assigned to the IK child — i.e. it must lie on the root-to-child path in the target tree. Rules out cross-branch assignments that would pass a depth-only check. |
-
-> `trg_ancestors[p]` = frozenset of target positions on the path from target root to `p`, **excluding p itself**. Precomputed once before SA starts.  
-> `trg_depth` is still precomputed and used as a tiebreaker in `init_fn` (prefer shallowest valid descendant) but no longer drives the filter itself.
+| `max_tries` | `simulated_annealing.py` `propose_neighbor(max_tries=32)` | `32` | Max proposal attempts before falling back to a no-op. Relevant only for hard `kinematic_filter` use; with the ancestor constraint moved to a soft penalty, this is rarely the binding limit. |
 
 ---
 
@@ -123,10 +132,11 @@ All 16 values in `H36M_BONE_LENGTHS` (`skeleton.py`) feed into Floyd-Warshall an
 | Rank | Parameter | Why it matters |
 |------|-----------|---------------|
 | 1 | `sigma` | Wrong value collapses the entire QAP signal — the affinity matrix becomes flat |
-| 2 | `lambda_repel` | Too low → spine clustering persists; too high → repulsion overwhelms attraction and scatters close joints |
-| 3 | `alpha` + `T_min` | Controls total search time; freeze too early → stuck in a local minimum |
-| 4 | `iters_per_temp` | Trades exploration breadth vs cooling granularity |
-| 5 | `n_restarts` | Cheapest robustness lever for a small problem |
-| 6 | Pruning thresholds | Determine the target skeleton shape before any SA runs |
-| 7 | `max_tries` | Only binding when the kinematic filter is very restrictive |
+| 2 | `lambda_repel` | Too low → spine clustering or chain-skipping persists; too high → mismatch penalty overwhelms attraction and scatters close joints |
+| 3 | `gamma_penalty` | Too low → cross-branch assignments survive to the final result; too high → SA can't explore at high T and freezes near the initial state |
+| 4 | `alpha` + `T_min` | Controls total search time; freeze too early → stuck in a local minimum |
+| 5 | `iters_per_temp` | Trades exploration breadth vs cooling granularity |
+| 6 | `n_restarts` | Cheapest robustness lever for a small problem |
+| 7 | Pruning thresholds | Determine the target skeleton shape before any SA runs |
 | 8 | Bone lengths | Affect `D_ik` shape; relative ratios matter more than absolute values |
+| 9 | `max_tries` | Only binding with a hard kinematic_filter; currently not the bottleneck |

@@ -98,17 +98,27 @@ DEFAULT_GLB_PATH = os.path.join(
 
 
 def build_hierarchy_constraints(G_ik, ik_ordered, pruned_G, trg_ordered):
-    """Build (kinematic_filter, init_fn) enforcing parent-above-child depth order.
+    """Build (kinematic_filter, init_fn) enforcing ancestor-based depth ordering.
 
-    Depth = hops from the root (the unique in-degree-0 node) in each skeleton.
+    The old depth-only filter checked that the target node assigned to an IK child
+    had a higher hop count from the target root than the target node assigned to its
+    IK parent. That is necessary but not sufficient: two nodes can be correctly
+    depth-ordered yet sit on completely different branches of the target tree (e.g.
+    one on the left-leg chain, one on the right-arm chain), producing a kinematically
+    nonsensical assignment that the filter would silently pass.
 
-    - kinematic_filter rejects any mapping where an IK child is assigned a target
-      node shallower-or-equal to its IK parent's target — i.e. an inverted limb.
-    - init_fn builds a hierarchy-feasible START by walking the IK tree root-down
-      and giving each joint the shallowest still-available target node (of its
-      class) strictly deeper than its parent's, so the filter passes by
-      construction. Without this, a random start is infeasible and every proposal
-      gets rejected (deadlock).
+    The corrected filter checks proper ancestry: for every IK edge (parent→child),
+    the target node assigned to the IK parent must lie on the root-to-child path in
+    the target tree. This rules out all cross-branch assignments.
+
+    - trg_ancestors[p] = frozenset of target positions that are proper ancestors of p
+      (path from target root to p, excluding p itself). Precomputed once.
+    - kinematic_filter: state[parent_pos] must be in trg_ancestors[state[child_pos]]
+      for every IK edge.
+    - init_fn: walks IK nodes root-first (BFS), assigning each node the shallowest
+      available target that is a descendant of its IK parent's assignment. Falls back
+      to any available node of the correct class if no ancestor-consistent descendant
+      exists (handles skeleton topology mismatches gracefully).
     """
     ikpos = {n: i for i, n in enumerate(ik_ordered)}
     n_ik = len(ik_ordered)
@@ -116,47 +126,62 @@ def build_hierarchy_constraints(G_ik, ik_ordered, pruned_G, trg_ordered):
     UG_ik = G_ik.to_undirected()
     ik_root = next(n for n in G_ik.nodes() if G_ik.in_degree(n) == 0)
     ik_depth = nx.shortest_path_length(UG_ik, ik_root)
-    ik_bfs = sorted(G_ik.nodes(), key=lambda n: ik_depth[n])  # parents before children
+    ik_bfs = sorted(G_ik.nodes(), key=lambda n: ik_depth[n])
     ik_parent = {n: next(iter(G_ik.predecessors(n)), None) for n in G_ik.nodes()}
 
     ik_is_leaf = {ikpos[n]: (UG_ik.degree(n) == 1) for n in G_ik.nodes()}
-    ik_leaves = np.array([p for p in range(n_ik) if ik_is_leaf[p]], dtype=int)
+    ik_leaves    = np.array([p for p in range(n_ik) if     ik_is_leaf[p]], dtype=int)
     ik_internals = np.array([p for p in range(n_ik) if not ik_is_leaf[p]], dtype=int)
     ik_edges = [(ikpos[u], ikpos[v]) for u, v in G_ik.edges()]
 
     UG_trg = pruned_G.to_undirected()
     trg_root = next(n for n in pruned_G.nodes() if pruned_G.in_degree(n) == 0)
-    depth_node = nx.shortest_path_length(UG_trg, trg_root)
     n_trg = len(trg_ordered)
-    trg_depth = np.array([depth_node[trg_ordered[p]] for p in range(n_trg)])
+    trg_pos_of = {trg_ordered[p]: p for p in range(n_trg)}
     trg_is_leaf = np.array([UG_trg.degree(trg_ordered[p]) == 1 for p in range(n_trg)])
+
+    # Kept for tiebreaking in init_fn only (prefer shallowest valid candidate).
+    depth_node = nx.shortest_path_length(UG_trg, trg_root)
+    trg_depth  = np.array([depth_node[trg_ordered[p]] for p in range(n_trg)])
+
+    # Proper ancestor sets. For each target position p, trg_ancestors[p] is the
+    # frozenset of positions on the path root→p, excluding p itself.
+    trg_ancestors = {}
+    for p in range(n_trg):
+        path = nx.shortest_path(UG_trg, trg_root, trg_ordered[p])
+        trg_ancestors[p] = frozenset(trg_pos_of[n] for n in path[:-1])
 
     def kinematic_filter(state):
         for parent_pos, child_pos in ik_edges:
-            if trg_depth[state[parent_pos]] >= trg_depth[state[child_pos]]:
+            if state[parent_pos] not in trg_ancestors[state[child_pos]]:
                 return False
         return True
 
     def init_fn(rng):
         s = SAState(n_ik)
-        s.ik_leaves = ik_leaves
+        s.ik_leaves    = ik_leaves
         s.ik_internals = ik_internals
-        assigned_depth = {}
-        avail_leaf = [p for p in range(n_trg) if trg_is_leaf[p]]
-        avail_int = [p for p in range(n_trg) if not trg_is_leaf[p]]
+        avail_leaf = [p for p in range(n_trg) if     trg_is_leaf[p]]
+        avail_int  = [p for p in range(n_trg) if not trg_is_leaf[p]]
+        assigned_trg = {}
         for node in ik_bfs:
-            pos = ikpos[node]
+            pos    = ikpos[node]
             parent = ik_parent[node]
-            min_d = 0 if parent is None else assigned_depth[ikpos[parent]] + 1
-            pool = avail_leaf if ik_is_leaf[pos] else avail_int
-            cands = [p for p in pool if trg_depth[p] >= min_d] or list(pool)
-            md = min(trg_depth[p] for p in cands)
-            best = [p for p in cands if trg_depth[p] == md]
+            pool   = avail_leaf if ik_is_leaf[pos] else avail_int
+            if parent is None:
+                cands = list(pool)
+            else:
+                t_parent = assigned_trg[ikpos[parent]]
+                cands = [p for p in pool if t_parent in trg_ancestors[p]]
+                if not cands:
+                    cands = list(pool)  # fallback: topology mismatch
+            min_d = min(trg_depth[p] for p in cands)
+            best  = [p for p in cands if trg_depth[p] == min_d]
             choice = int(rng.choice(best))
             s.state[pos] = choice
-            assigned_depth[pos] = int(trg_depth[choice])
+            assigned_trg[pos] = choice
             pool.remove(choice)
-        s.unmapped_trg_leaves = list(avail_leaf)
+        s.unmapped_trg_leaves    = list(avail_leaf)
         s.unmapped_trg_internals = list(avail_int)
         return s
 

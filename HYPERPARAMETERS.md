@@ -56,16 +56,16 @@ Ranked within each section by impact on result quality.
 
 ---
 
-## 6. Kinematic Depth Filter
+## 6. Kinematic Ancestor Filter
 
-Hardcoded constraints in `main.py`. Not exposed as function parameters.
+Hardcoded constraints in `main.py:build_hierarchy_constraints`. Not exposed as function parameters.
 
 | Constraint | Code | Role |
 |------------|------|------|
-| Strict depth ordering | `trg_depth[state[child]] > trg_depth[state[parent]]` | Rejects any proposal where an IK child is mapped to a target node at the same depth or shallower than its IK parent's target. Prevents limb inversion. |
+| Proper ancestry | `state[parent_pos] in trg_ancestors[state[child_pos]]` | For every IK edge (parent→child), the target node assigned to the IK parent must be a **proper ancestor** of the target node assigned to the IK child — i.e. it must lie on the root-to-child path in the target tree. Rules out cross-branch assignments that would pass a depth-only check. |
 
-> The strictness (`>` vs `>=`) is an implicit hyperparameter.  
-> Relaxing to `>=` would permit IK siblings to share the same target depth level.
+> `trg_ancestors[p]` = frozenset of target positions on the path from target root to `p`, **excluding p itself**. Precomputed once before SA starts.  
+> `trg_depth` is still precomputed and used as a tiebreaker in `init_fn` (prefer shallowest valid descendant) but no longer drives the filter itself.
 
 ---
 

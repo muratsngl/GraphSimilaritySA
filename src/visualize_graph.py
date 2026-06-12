@@ -1,6 +1,7 @@
 import sys
 import os
 import signal
+import socket
 import threading
 import webbrowser
 import time
@@ -194,7 +195,9 @@ app.layout = html.Div(
 
 
 if __name__ == '__main__':
-    port = 8050
+    with socket.socket() as _s:
+        _s.bind(('', 0))
+        port = _s.getsockname()[1]
     url = f'http://127.0.0.1:{port}'
 
     server_thread = threading.Thread(

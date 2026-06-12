@@ -21,6 +21,7 @@ import sys
 import os
 import json
 import signal
+import socket
 import threading
 import webbrowser
 import time
@@ -153,13 +154,19 @@ GLB_FILES = scan_glb_files()
 if not GLB_FILES:
     print("No .glb files found in assets/. Exiting.")
     sys.exit(1)
-print(f"Found: {GLB_FILES}")
+print(f"Found {len(GLB_FILES)} skeleton(s): {GLB_FILES}")
 
-SKELETON_DATA = {}  # filename → (pruned_G, world_positions)
-for _fname in GLB_FILES:
-    _fpath = os.path.join(ASSETS_DIR, _fname)
-    print(f"  Building graph for {_fname}...")
-    SKELETON_DATA[_fname] = build_skeleton_data(_fpath)
+SKELETON_DATA = {}  # lazy cache: filename → (pruned_G, world_positions)
+
+
+def get_skeleton_data(filename):
+    """Load and cache one skeleton on first access; cheap on subsequent calls."""
+    if filename not in SKELETON_DATA:
+        fpath = os.path.join(ASSETS_DIR, filename)
+        print(f"  Loading {filename}…")
+        SKELETON_DATA[filename] = build_skeleton_data(fpath)
+        print(f"  {filename} ready.")
+    return SKELETON_DATA[filename]
 
 # IK rig — built once, never changes
 G_IK = build_human36m_graph()
@@ -184,7 +191,7 @@ def _name_to_node_id(pruned_G, name):
 
 def assignments_to_names(skeleton_name, assignments):
     """Session {str(ik_idx): str(node_id)} → JSON {str(ik_idx): bone_name}."""
-    pruned_G, _ = SKELETON_DATA[skeleton_name]
+    pruned_G, _ = get_skeleton_data(skeleton_name)
     result = {}
     for ik_idx_str, node_id_str in assignments.items():
         node_id = int(node_id_str)
@@ -195,7 +202,7 @@ def assignments_to_names(skeleton_name, assignments):
 
 def names_to_assignments(skeleton_name, name_assignments):
     """JSON {str(ik_idx): bone_name} → session {str(ik_idx): str(node_id)}."""
-    pruned_G, _ = SKELETON_DATA[skeleton_name]
+    pruned_G, _ = get_skeleton_data(skeleton_name)
     result = {}
     for ik_idx_str, name in name_assignments.items():
         node_id_str = _name_to_node_id(pruned_G, name)
@@ -232,21 +239,22 @@ def build_ik_elements(selected_ik_id=None, assigned_ik_node_ids=None):
     return elements
 
 
-def build_target_elements(skeleton_name, assignments=None):
-    """Target skeleton elements. assignments: {str(ik_idx): str(node_id)}."""
+def build_target_elements(skeleton_name, assignments=None, spread=1.0):
+    """Target skeleton elements. assignments: {str(ik_idx): str(node_id)}.
+    spread multiplies the fit_positions box so joints are further apart visually."""
     if assignments is None:
         assignments = {}
-    if skeleton_name not in SKELETON_DATA:
+    if skeleton_name not in GLB_FILES:
         return [], {'name': 'breadthfirst', 'directed': True, 'padding': 40}
 
-    pruned_G, world_pos = SKELETON_DATA[skeleton_name]
+    pruned_G, world_pos = get_skeleton_data(skeleton_name)
     assigned_target_ids = {v: k for k, v in assignments.items()}  # node_id_str → ik_idx_str
 
     raw_pos = {n: project(world_pos[n]) for n in pruned_G.nodes() if n in world_pos}
     use_preset = bool(raw_pos)
 
     if use_preset:
-        pos2d = fit_positions(raw_pos)
+        pos2d = fit_positions(raw_pos, box=500.0 * spread)
         # Nodes missing from world_pos land at centroid — rare, non-blocking
         if len(raw_pos) < pruned_G.number_of_nodes():
             cx = sum(x for x, _ in pos2d.values()) / len(pos2d)
@@ -291,7 +299,7 @@ def build_target_elements(skeleton_name, assignments=None):
 
 def make_assignment_table(assignments, skeleton_name):
     rows = []
-    pruned_G = SKELETON_DATA[skeleton_name][0] if skeleton_name in SKELETON_DATA else None
+    pruned_G = get_skeleton_data(skeleton_name)[0] if skeleton_name else None
     for i in range(N_IK):
         ik_name = H36M_NAMES.get(IK_ORDERED[i], str(i))
         ik_idx_str = str(i)
@@ -385,7 +393,20 @@ BTN = {**_S, 'backgroundColor': '#21262d', 'color': '#c9d1d9',
 BTN_SAVE = {**BTN, 'backgroundColor': '#238636', 'borderColor': '#2ea043', 'color': '#fff'}
 
 _default_skeleton = GLB_FILES[0]
-_init_trg_elems, _init_layout = build_target_elements(_default_skeleton)
+
+# Pre-load annotations for the default skeleton so the UI is populated on first open.
+_default_assignments = {}
+if INITIAL_ANNOTATIONS and _default_skeleton in INITIAL_ANNOTATIONS:
+    _default_assignments = names_to_assignments(
+        _default_skeleton,
+        INITIAL_ANNOTATIONS[_default_skeleton].get('assignments', {}),
+    )
+
+_default_assigned_ik_ids = {
+    str(IK_ORDERED[int(k)]) for k in _default_assignments if 0 <= int(k) < N_IK
+}
+_init_ik_elems   = build_ik_elements(assigned_ik_node_ids=_default_assigned_ik_ids)
+_init_trg_elems, _init_layout = build_target_elements(_default_skeleton, _default_assignments)
 
 app = dash.Dash(__name__)
 app.title = "Skeleton Annotator"
@@ -409,15 +430,21 @@ app.layout = html.Div(
                 clearable=False,
                 style={'width': '220px', 'fontSize': '12px', 'flexShrink': 0},
             ),
-            dcc.Textarea(
-                id='description-area',
-                placeholder='Skeleton description…',
-                style={
-                    'flex': 1, 'height': '32px', 'backgroundColor': '#21262d',
-                    'color': '#c9d1d9', 'border': '1px solid #30363d',
-                    'borderRadius': '6px', 'padding': '4px 8px',
-                    'fontSize': '12px', 'fontFamily': 'monospace', 'resize': 'none',
-                },
+            html.Div(
+                style={'display': 'flex', 'alignItems': 'center', 'gap': '6px',
+                       'flexShrink': 0},
+                children=[
+                    html.Span("spread", style={'color': '#8b949e', 'fontSize': '11px'}),
+                    html.Div(
+                        dcc.Slider(
+                            id='spread-slider',
+                            min=0.5, max=3.0, step=0.25, value=1.0,
+                            marks={0.5: '0.5', 1.0: '1×', 2.0: '2×', 3.0: '3×'},
+                            tooltip={'placement': 'bottom', 'always_visible': False},
+                        ),
+                        style={'width': '160px'},
+                    ),
+                ],
             ),
             html.Button("Save", id='save-btn', n_clicks=0, style=BTN_SAVE),
             html.Button("Clear", id='clear-btn', n_clicks=0, style=BTN),
@@ -437,7 +464,7 @@ app.layout = html.Div(
                     ),
                     cyto.Cytoscape(
                         id='ik-graph',
-                        elements=build_ik_elements(),
+                        elements=_init_ik_elems,
                         layout={'name': 'preset', 'fit': True, 'padding': 40},
                         stylesheet=STYLESHEET,
                         style={'width': '100%', 'height': '100%',
@@ -468,7 +495,7 @@ app.layout = html.Div(
                                  style=PANEL_LABEL_STYLE),
                         html.Div(
                             id='assignment-table',
-                            children=make_assignment_table({}, _default_skeleton),
+                            children=make_assignment_table(_default_assignments, _default_skeleton),
                             style={'overflowY': 'auto', 'flex': 1},
                         ),
                     ],
@@ -478,7 +505,7 @@ app.layout = html.Div(
 
         # ── state stores ──────────────────────────────────────────────────────
         dcc.Store(id='selected-ik', data=None),
-        dcc.Store(id='assignments', data={}),
+        dcc.Store(id='assignments', data=_default_assignments),
         dcc.Store(id='annotations-store', data=INITIAL_ANNOTATIONS),
     ],
 )
@@ -499,7 +526,6 @@ def select_ik_joint(tap_data):
 
 @app.callback(
     Output('assignments', 'data'),
-    Output('description-area', 'value'),
     Input('skeleton-dropdown', 'value'),
     Input('target-graph', 'tapNodeData'),
     Input('clear-btn', 'n_clicks'),
@@ -508,32 +534,34 @@ def select_ik_joint(tap_data):
     State('annotations-store', 'data'),
     prevent_initial_call=True,
 )
-def update_assignments(skeleton, tap_data, _clear, selected_ik, assignments, annotations):
+def update_assignments(skeleton, tap_data, _, selected_ik, assignments, annotations):
     triggered = callback_context.triggered[0]['prop_id'].split('.')[0]
 
     if triggered == 'skeleton-dropdown':
         if skeleton and annotations and skeleton in annotations:
-            entry = annotations[skeleton]
-            loaded = names_to_assignments(skeleton, entry.get('assignments', {}))
-            return loaded, entry.get('description', '')
-        return {}, ''
+            loaded = names_to_assignments(skeleton, annotations[skeleton].get('assignments', {}))
+            return loaded
+        return {}
 
     if triggered == 'clear-btn':
-        return {}, no_update
+        return {}
 
     if triggered == 'target-graph':
         if tap_data is None or selected_ik is None:
-            return no_update, no_update
+            return no_update
         target_id = tap_data['id']
         ik_node_id = int(selected_ik)
         if ik_node_id not in IK_IDX_OF:
-            return no_update, no_update
+            return no_update
         ik_idx_str = str(IK_IDX_OF[ik_node_id])
+        # Clicking the same target that's already assigned to this IK → un-assign (toggle off)
+        if assignments.get(ik_idx_str) == target_id:
+            return {k: v for k, v in assignments.items() if k != ik_idx_str}
         new_assignments = {k: v for k, v in assignments.items() if v != target_id}
         new_assignments[ik_idx_str] = target_id
-        return new_assignments, no_update
+        return new_assignments
 
-    return no_update, no_update
+    return no_update
 
 
 @app.callback(
@@ -544,11 +572,14 @@ def update_assignments(skeleton, tap_data, _clear, selected_ik, assignments, ann
     Output('target-label', 'children'),
     Input('assignments', 'data'),
     Input('selected-ik', 'data'),
+    Input('spread-slider', 'value'),
     State('skeleton-dropdown', 'value'),
 )
-def render_graphs(assignments, selected_ik, skeleton):
+def render_graphs(assignments, selected_ik, spread, skeleton):
     if assignments is None:
         assignments = {}
+    if spread is None:
+        spread = 1.0
 
     assigned_ik_node_ids = {
         str(IK_ORDERED[int(k)]) for k in assignments if 0 <= int(k) < N_IK
@@ -558,7 +589,10 @@ def render_graphs(assignments, selected_ik, skeleton):
         selected_ik_id=selected_ik,
         assigned_ik_node_ids=assigned_ik_node_ids,
     )
-    trg_elems, layout = build_target_elements(skeleton, assignments) if skeleton else ([], {})
+    trg_elems, layout = (
+        build_target_elements(skeleton, assignments, spread=spread)
+        if skeleton else ([], {})
+    )
     table = make_assignment_table(assignments, skeleton)
 
     n_assigned = len(assignments)
@@ -574,18 +608,17 @@ def render_graphs(assignments, selected_ik, skeleton):
     Output('status-text', 'children'),
     Input('save-btn', 'n_clicks'),
     State('assignments', 'data'),
-    State('description-area', 'value'),
     State('skeleton-dropdown', 'value'),
     State('annotations-store', 'data'),
     prevent_initial_call=True,
 )
-def save_annotation(_, assignments, description, skeleton, annotations):
+def save_annotation(_, assignments, skeleton, annotations):
     if not skeleton:
         return no_update, "No skeleton selected."
     name_assignments = assignments_to_names(skeleton, assignments or {})
     updated = dict(annotations or {})
     updated[skeleton] = {
-        'description': description or '',
+        'description': skeleton,
         'assignments': name_assignments,
     }
     try:
@@ -599,7 +632,9 @@ def save_annotation(_, assignments, description, skeleton, annotations):
 # ── runner ────────────────────────────────────────────────────────────────────
 
 if __name__ == '__main__':
-    port = 8052
+    with socket.socket() as _s:
+        _s.bind(('', 0))
+        port = _s.getsockname()[1]
     url = f'http://127.0.0.1:{port}'
 
     server_thread = threading.Thread(

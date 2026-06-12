@@ -7,7 +7,7 @@ Three experiments:
   3. Robustness — stability across 20 seeds on the first annotated GLB
 
 Run:  python src/evaluate.py
-Results saved to results/
+Results saved to results/  (text log + CSVs)
 """
 
 import sys
@@ -29,6 +29,18 @@ from skeleton import H36M_NAMES
 
 ASSETS_DIR  = os.path.normpath(os.path.join(os.path.dirname(__file__), '..', 'assets'))
 RESULTS_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), '..', 'results'))
+
+# ── logger — writes to both terminal and results/results.txt ─────────────────
+
+_log_fh = None   # set in __main__ before experiments run
+
+
+def log(msg=''):
+    print(msg)
+    if _log_fh is not None:
+        _log_fh.write(str(msg) + '\n')
+        _log_fh.flush()
+
 
 # ── ablation configuration table ──────────────────────────────────────────────
 
@@ -74,7 +86,7 @@ def build_ground_truth(glb_filename: str, pruned_G, trg_ordered: list,
     assignments = annotations[glb_filename].get('assignments', {})
     n = len(assignments)
     if n < 17:
-        print(f"WARNING: {glb_filename} has only {n}/17 joints annotated.")
+        log(f"WARNING: {glb_filename} has only {n}/17 joints annotated.")
 
     name_to_node = {data.get('name', ''): node_id
                     for node_id, data in pruned_G.nodes(data=True)}
@@ -84,7 +96,7 @@ def build_ground_truth(glb_filename: str, pruned_G, trg_ordered: list,
         ik_pos = int(ik_idx_str)
         node_id = name_to_node.get(bone_name)
         if node_id is None:
-            print(f"WARNING: bone '{bone_name}' not found in pruned graph — skipping.")
+            log(f"WARNING: bone '{bone_name}' not found in pruned graph — skipping.")
             continue
         ground_truth[ik_pos] = trg_ordered.index(node_id)
 
@@ -131,7 +143,6 @@ def compute_metrics(best_state, ik_ordered, pruned_G, trg_ordered,
     """Compute all evaluation metrics for one SA result against ground truth."""
     n_annotated = len(ground_truth)
 
-    # Hop distances per annotated joint
     hop_list = []
     hop_by_joint = {}
     for ik_pos, gt_trg_pos in ground_truth.items():
@@ -157,18 +168,17 @@ def compute_metrics(best_state, ik_ordered, pruned_G, trg_ordered,
     avr = violation_count / 16 * 100
 
     flip = detect_symmetry_flip(best_state, ik_ordered, pruned_G, trg_ordered)
-
     qap_energy = energy(best_state, K_ik, K_trg, lambda_repel=0.0)
 
     return {
-        'exact_acc':  exact_acc,
-        'near_acc':   near_acc,
-        'wrong_limb': wrong_limb,
-        'limb_acc':   limb_acc,
-        'avr':        avr,
-        'flip':       flip,
-        'qap_energy': qap_energy,
-        'hop_list':   hop_list,
+        'exact_acc':    exact_acc,
+        'near_acc':     near_acc,
+        'wrong_limb':   wrong_limb,
+        'limb_acc':     limb_acc,
+        'avr':          avr,
+        'flip':         flip,
+        'qap_energy':   qap_energy,
+        'hop_list':     hop_list,
         'hop_by_joint': hop_by_joint,
     }
 
@@ -188,7 +198,7 @@ def _run_and_build_affinities(glb_path: str, sigma: float,
         gamma_penalty=gamma_penalty,
         verbose=False,
     )
-    D_ik  = graph_to_normalized_matrix(R['G_ik'],    R['ik_ordered'])
+    D_ik  = graph_to_normalized_matrix(R['G_ik'],     R['ik_ordered'])
     D_trg = graph_to_normalized_matrix(R['pruned_G'], R['trg_ordered'])
     K_ik  = build_affinity(D_ik,  sigma=sigma)
     K_trg = build_affinity(D_trg, sigma=sigma)
@@ -201,20 +211,16 @@ def run_ablation(annotations_path: str,
                  assets_dir: str = ASSETS_DIR,
                  sigma: float = 0.2,
                  seed: int = 91) -> list:
-    """Ablation study: 5 configurations x all annotated GLBs.
-
-    Parameters exposed so you can re-run with e.g. sigma=0.3 without touching
-    the config table. Returns a list of 5 averaged-metric dicts.
-    """
+    """Ablation study: 5 configurations x all annotated GLBs."""
     annotations = load_annotations(annotations_path)
     glb_files   = list(annotations.keys())
-    print(f"\n=== ABLATION ({len(glb_files)} file(s), sigma={sigma}) ===")
+    log(f"\n=== ABLATION ({len(glb_files)} file(s), sigma={sigma}) ===")
 
     all_results = []
 
     for cfg in ABLATION_CONFIGS:
         cfg_metrics = []
-        print(f"\n  Config: {cfg['name']}")
+        log(f"\n  Config: {cfg['name']}")
         for glb_filename in glb_files:
             glb_path = os.path.join(assets_dir, glb_filename)
             try:
@@ -231,35 +237,32 @@ def run_ablation(annotations_path: str,
                     R['best_state'], R['ik_ordered'], R['pruned_G'], R['trg_ordered'],
                     ground_truth, K_ik, K_trg, R['G_ik'])
                 cfg_metrics.append(m)
-                print(f"    {glb_filename}: exact={m['exact_acc']:.1f}%  "
-                      f"limb={m['limb_acc']:.1f}%  E={m['qap_energy']:.4f}")
+                log(f"    {glb_filename}: exact={m['exact_acc']:.1f}%  "
+                    f"limb={m['limb_acc']:.1f}%  E={m['qap_energy']:.4f}")
             except Exception as e:
-                print(f"    WARNING: {glb_filename} skipped — {e}")
+                log(f"    WARNING: {glb_filename} skipped — {e}")
 
         if not cfg_metrics:
             continue
 
         avg = {
             'config':     cfg['name'],
-            'exact_acc':  float(np.mean([m['exact_acc']           for m in cfg_metrics])),
-            'near_acc':   float(np.mean([m['near_acc']            for m in cfg_metrics])),
-            'wrong_limb': float(np.mean([m['wrong_limb']          for m in cfg_metrics])),
-            'limb_acc':   float(np.mean([m['limb_acc']            for m in cfg_metrics])),
-            'avr':        float(np.mean([m['avr']                 for m in cfg_metrics])),
-            'flip_rate':  float(np.mean([float(m['flip'])         for m in cfg_metrics])) * 100,
-            'qap_energy': float(np.mean([m['qap_energy']          for m in cfg_metrics])),
+            'exact_acc':  float(np.mean([m['exact_acc']   for m in cfg_metrics])),
+            'near_acc':   float(np.mean([m['near_acc']    for m in cfg_metrics])),
+            'wrong_limb': float(np.mean([m['wrong_limb']  for m in cfg_metrics])),
+            'limb_acc':   float(np.mean([m['limb_acc']    for m in cfg_metrics])),
+            'avr':        float(np.mean([m['avr']         for m in cfg_metrics])),
+            'flip_rate':  float(np.mean([float(m['flip']) for m in cfg_metrics])) * 100,
+            'qap_energy': float(np.mean([m['qap_energy']  for m in cfg_metrics])),
         }
         all_results.append(avg)
 
-    # Print summary table
-    header = f"\n{'Config':<18} {'Exact%':>8} {'Limb%':>8} {'AVR%':>8} {'Flip%':>8} {'QAP E':>10}"
-    print(header)
-    print("-" * 64)
+    log(f"\n{'Config':<18} {'Exact%':>8} {'Limb%':>8} {'AVR%':>8} {'Flip%':>8} {'QAP E':>10}")
+    log("-" * 64)
     for r in all_results:
-        print(f"{r['config']:<18} {r['exact_acc']:>8.1f} {r['limb_acc']:>8.1f} "
-              f"{r['avr']:>8.1f} {r['flip_rate']:>8.1f} {r['qap_energy']:>10.4f}")
+        log(f"{r['config']:<18} {r['exact_acc']:>8.1f} {r['limb_acc']:>8.1f} "
+            f"{r['avr']:>8.1f} {r['flip_rate']:>8.1f} {r['qap_energy']:>10.4f}")
 
-    # Save CSV
     os.makedirs(RESULTS_DIR, exist_ok=True)
     _path = os.path.join(RESULTS_DIR, 'ablation.csv')
     with open(_path, 'w', newline='') as f:
@@ -268,7 +271,7 @@ def run_ablation(annotations_path: str,
         writer = csv.DictWriter(f, fieldnames=fields)
         writer.writeheader()
         writer.writerows(all_results)
-    print(f"\nSaved {_path}")
+    log(f"\nSaved {_path}")
 
     return all_results
 
@@ -282,15 +285,11 @@ def run_accuracy_eval(annotations_path: str,
                       gamma_penalty: float = 3.0,
                       n_restarts: int = 7,
                       seed: int = 91) -> dict:
-    """Full method accuracy on all annotated GLBs.
-
-    All SA parameters exposed for easy parameter sweeps.
-    Returns an aggregation dict (means, stds, flip stats).
-    """
+    """Full method accuracy on all annotated GLBs."""
     annotations = load_annotations(annotations_path)
     glb_files   = list(annotations.keys())
-    print(f"\n=== ACCURACY EVAL ({len(glb_files)} file(s), "
-          f"σ={sigma} λ={lambda_repel} γ={gamma_penalty} restarts={n_restarts}) ===")
+    log(f"\n=== ACCURACY EVAL ({len(glb_files)} file(s), "
+        f"σ={sigma} λ={lambda_repel} γ={gamma_penalty} restarts={n_restarts}) ===")
 
     per_file = []
 
@@ -312,23 +311,21 @@ def run_accuracy_eval(annotations_path: str,
             m['file'] = glb_filename
             per_file.append(m)
         except Exception as e:
-            print(f"WARNING: {glb_filename} skipped — {e}")
+            log(f"WARNING: {glb_filename} skipped — {e}")
 
     if not per_file:
-        print("No files evaluated.")
+        log("No files evaluated.")
         return {}
 
-    # Per-file table
-    print(f"\n{'File':<36} {'Exact%':>7} {'Limb%':>7} {'Wrong%':>7} "
-          f"{'AVR%':>7} {'Flip':>5} {'QAP E':>10}")
-    print("-" * 82)
+    log(f"\n{'File':<36} {'Exact%':>7} {'Limb%':>7} {'Wrong%':>7} "
+        f"{'AVR%':>7} {'Flip':>5} {'QAP E':>10}")
+    log("-" * 82)
     for m in per_file:
         flip_str = 'YES' if m['flip'] else 'no'
-        print(f"{m['file']:<36} {m['exact_acc']:>7.1f} {m['limb_acc']:>7.1f} "
-              f"{m['wrong_limb']:>7.1f} {m['avr']:>7.1f} {flip_str:>5} "
-              f"{m['qap_energy']:>10.4f}")
+        log(f"{m['file']:<36} {m['exact_acc']:>7.1f} {m['limb_acc']:>7.1f} "
+            f"{m['wrong_limb']:>7.1f} {m['avr']:>7.1f} {flip_str:>5} "
+            f"{m['qap_energy']:>10.4f}")
 
-    # Aggregate
     N = len(per_file)
     keys = ['exact_acc', 'near_acc', 'wrong_limb', 'limb_acc', 'avr', 'qap_energy']
     agg = {k: {'mean': float(np.mean([m[k] for m in per_file])),
@@ -337,23 +334,22 @@ def run_accuracy_eval(annotations_path: str,
 
     flipped_files   = [m for m in per_file if m['flip']]
     unflipped_files = [m for m in per_file if not m['flip']]
-    agg['flip_rate']            = len(flipped_files) / N * 100
-    agg['flip_excluded_exact']  = (float(np.mean([m['exact_acc'] for m in unflipped_files]))
-                                   if unflipped_files else float('nan'))
-    agg['flip_excluded_limb']   = (float(np.mean([m['limb_acc'] for m in unflipped_files]))
-                                   if unflipped_files else float('nan'))
+    agg['flip_rate']           = len(flipped_files) / N * 100
+    agg['flip_excluded_exact'] = (float(np.mean([m['exact_acc'] for m in unflipped_files]))
+                                  if unflipped_files else float('nan'))
+    agg['flip_excluded_limb']  = (float(np.mean([m['limb_acc']  for m in unflipped_files]))
+                                  if unflipped_files else float('nan'))
 
-    print(f"\n=== AGGREGATE ({N} file(s)) ===")
-    print(f"Exact accuracy:          {agg['exact_acc']['mean']:>6.1f} ± {agg['exact_acc']['std']:.1f} %")
-    print(f"Near accuracy (hop<=1):  {agg['near_acc']['mean']:>6.1f} ± {agg['near_acc']['std']:.1f} %")
-    print(f"Wrong limb rate:         {agg['wrong_limb']['mean']:>6.1f} ± {agg['wrong_limb']['std']:.1f} %")
-    print(f"Limb accuracy:           {agg['limb_acc']['mean']:>6.1f} ± {agg['limb_acc']['std']:.1f} %")
-    print(f"AVR:                     {agg['avr']['mean']:>6.1f} ± {agg['avr']['std']:.1f} %")
-    print(f"Flip rate:               {agg['flip_rate']:>6.1f} %")
-    print(f"Flip-excluded exact acc: {agg['flip_excluded_exact']:>6.1f} %")
-    print(f"Flip-excluded limb acc:  {agg['flip_excluded_limb']:>6.1f} %")
+    log(f"\n=== AGGREGATE ({N} file(s)) ===")
+    log(f"Exact accuracy:          {agg['exact_acc']['mean']:>6.1f} ± {agg['exact_acc']['std']:.1f} %")
+    log(f"Near accuracy (hop<=1):  {agg['near_acc']['mean']:>6.1f} ± {agg['near_acc']['std']:.1f} %")
+    log(f"Wrong limb rate:         {agg['wrong_limb']['mean']:>6.1f} ± {agg['wrong_limb']['std']:.1f} %")
+    log(f"Limb accuracy:           {agg['limb_acc']['mean']:>6.1f} ± {agg['limb_acc']['std']:.1f} %")
+    log(f"AVR:                     {agg['avr']['mean']:>6.1f} ± {agg['avr']['std']:.1f} %")
+    log(f"Flip rate:               {agg['flip_rate']:>6.1f} %")
+    log(f"Flip-excluded exact acc: {agg['flip_excluded_exact']:>6.1f} %")
+    log(f"Flip-excluded limb acc:  {agg['flip_excluded_limb']:>6.1f} %")
 
-    # Save CSVs
     os.makedirs(RESULTS_DIR, exist_ok=True)
 
     acc_path = os.path.join(RESULTS_DIR, 'accuracy.csv')
@@ -363,7 +359,7 @@ def run_accuracy_eval(annotations_path: str,
         writer = csv.DictWriter(f, fieldnames=fields, extrasaction='ignore')
         writer.writeheader()
         writer.writerows(per_file)
-    print(f"\nSaved {acc_path}")
+    log(f"\nSaved {acc_path}")
 
     sum_path = os.path.join(RESULTS_DIR, 'accuracy_summary.csv')
     with open(sum_path, 'w', newline='') as f:
@@ -381,21 +377,21 @@ def run_accuracy_eval(annotations_path: str,
         writer.writeheader()
         writer.writerow({
             'n_files': N,
-            'exact_acc_mean': agg['exact_acc']['mean'],
-            'exact_acc_std':  agg['exact_acc']['std'],
-            'near_acc_mean':  agg['near_acc']['mean'],
-            'near_acc_std':   agg['near_acc']['std'],
+            'exact_acc_mean':  agg['exact_acc']['mean'],
+            'exact_acc_std':   agg['exact_acc']['std'],
+            'near_acc_mean':   agg['near_acc']['mean'],
+            'near_acc_std':    agg['near_acc']['std'],
             'wrong_limb_mean': agg['wrong_limb']['mean'],
             'wrong_limb_std':  agg['wrong_limb']['std'],
-            'limb_acc_mean':  agg['limb_acc']['mean'],
-            'limb_acc_std':   agg['limb_acc']['std'],
-            'avr_mean': agg['avr']['mean'],
-            'avr_std':  agg['avr']['std'],
+            'limb_acc_mean':   agg['limb_acc']['mean'],
+            'limb_acc_std':    agg['limb_acc']['std'],
+            'avr_mean':  agg['avr']['mean'],
+            'avr_std':   agg['avr']['std'],
             'flip_rate': agg['flip_rate'],
             'flip_excluded_exact': agg['flip_excluded_exact'],
             'flip_excluded_limb':  agg['flip_excluded_limb'],
         })
-    print(f"Saved {sum_path}")
+    log(f"Saved {sum_path}")
 
     return agg
 
@@ -409,19 +405,13 @@ def run_robustness(annotations_path: str,
                    lambda_repel: float = 0.5,
                    gamma_penalty: float = 3.0,
                    n_restarts: int = 7) -> dict:
-    """Stability test: run full method n_runs times (seeds 0..n_runs-1).
-
-    Uses the first annotated GLB as the test rig. All SA parameters exposed
-    so you can sweep them independently of the main accuracy experiment.
-    Returns a summary dict with means, stds, flip count, and best-run history.
-    """
+    """Stability test: run full method n_runs times (seeds 0..n_runs-1)."""
     annotations = load_annotations(annotations_path)
     glb_filename = next(iter(annotations))
     glb_path     = os.path.join(assets_dir, glb_filename)
-    print(f"\n=== ROBUSTNESS ({n_runs} runs, file={glb_filename}, "
-          f"σ={sigma} λ={lambda_repel} γ={gamma_penalty} restarts={n_restarts}) ===")
+    log(f"\n=== ROBUSTNESS ({n_runs} runs, file={glb_filename}, "
+        f"σ={sigma} λ={lambda_repel} γ={gamma_penalty} restarts={n_restarts}) ===")
 
-    # Build ground truth once (doesn't change across seeds)
     _R0, _, _ = _run_and_build_affinities(
         glb_path, sigma=sigma,
         lambda_repel=lambda_repel, gamma_penalty=gamma_penalty,
@@ -434,8 +424,8 @@ def run_robustness(annotations_path: str,
     best_energy_seen = np.inf
     best_history     = None
 
-    print(f"\n{'Run':>4} {'Seed':>5} {'Exact%':>8} {'Limb%':>8} {'QAP E':>10} {'Flip':>5}")
-    print("-" * 44)
+    log(f"\n{'Run':>4} {'Seed':>5} {'Exact%':>8} {'Limb%':>8} {'QAP E':>10} {'Flip':>5}")
+    log("-" * 44)
 
     for run_idx in range(n_runs):
         seed = run_idx
@@ -463,35 +453,34 @@ def run_robustness(annotations_path: str,
             }
             per_run.append(row)
             flip_str = 'YES' if m['flip'] else 'no'
-            print(f"{run_idx:>4} {seed:>5} {m['exact_acc']:>8.1f} {m['limb_acc']:>8.1f} "
-                  f"{m['qap_energy']:>10.4f} {flip_str:>5}")
+            log(f"{run_idx:>4} {seed:>5} {m['exact_acc']:>8.1f} {m['limb_acc']:>8.1f} "
+                f"{m['qap_energy']:>10.4f} {flip_str:>5}")
 
         except Exception as e:
-            print(f"  Run {run_idx} (seed={seed}) failed — {e}")
+            log(f"  Run {run_idx} (seed={seed}) failed — {e}")
 
     if not per_run:
-        print("No runs completed.")
+        log("No runs completed.")
         return {}
 
     N = len(per_run)
     summary = {
-        'n_runs':           N,
-        'qap_energy_mean':  float(np.mean([r['qap_energy'] for r in per_run])),
-        'qap_energy_std':   float(np.std( [r['qap_energy'] for r in per_run])),
-        'exact_acc_mean':   float(np.mean([r['exact_acc']  for r in per_run])),
-        'exact_acc_std':    float(np.std( [r['exact_acc']  for r in per_run])),
-        'limb_acc_mean':    float(np.mean([r['limb_acc']   for r in per_run])),
-        'limb_acc_std':     float(np.std( [r['limb_acc']   for r in per_run])),
-        'n_flips':          sum(1 for r in per_run if r['flip']),
+        'n_runs':          N,
+        'qap_energy_mean': float(np.mean([r['qap_energy'] for r in per_run])),
+        'qap_energy_std':  float(np.std( [r['qap_energy'] for r in per_run])),
+        'exact_acc_mean':  float(np.mean([r['exact_acc']  for r in per_run])),
+        'exact_acc_std':   float(np.std( [r['exact_acc']  for r in per_run])),
+        'limb_acc_mean':   float(np.mean([r['limb_acc']   for r in per_run])),
+        'limb_acc_std':    float(np.std( [r['limb_acc']   for r in per_run])),
+        'n_flips':         sum(1 for r in per_run if r['flip']),
     }
 
-    print(f"\n=== ROBUSTNESS SUMMARY ({N} runs) ===")
-    print(f"QAP energy:     {summary['qap_energy_mean']:.4f} ± {summary['qap_energy_std']:.4f}")
-    print(f"Exact accuracy: {summary['exact_acc_mean']:.1f} ± {summary['exact_acc_std']:.1f} %")
-    print(f"Limb accuracy:  {summary['limb_acc_mean']:.1f} ± {summary['limb_acc_std']:.1f} %")
-    print(f"Flip rate:      {summary['n_flips']} / {N} runs")
+    log(f"\n=== ROBUSTNESS SUMMARY ({N} runs) ===")
+    log(f"QAP energy:     {summary['qap_energy_mean']:.4f} ± {summary['qap_energy_std']:.4f}")
+    log(f"Exact accuracy: {summary['exact_acc_mean']:.1f} ± {summary['exact_acc_std']:.1f} %")
+    log(f"Limb accuracy:  {summary['limb_acc_mean']:.1f} ± {summary['limb_acc_std']:.1f} %")
+    log(f"Flip rate:      {summary['n_flips']} / {N} runs")
 
-    # Save CSVs
     os.makedirs(RESULTS_DIR, exist_ok=True)
 
     rob_path = os.path.join(RESULTS_DIR, 'robustness.csv')
@@ -500,7 +489,7 @@ def run_robustness(annotations_path: str,
                                                'limb_acc', 'qap_energy', 'flip'])
         writer.writeheader()
         writer.writerows(per_run)
-    print(f"\nSaved {rob_path}")
+    log(f"\nSaved {rob_path}")
 
     if best_history is not None:
         conv_path = os.path.join(RESULTS_DIR, 'convergence.csv')
@@ -509,7 +498,7 @@ def run_robustness(annotations_path: str,
             writer.writeheader()
             writer.writerows({'step': i, 'energy': e}
                              for i, e in enumerate(best_history))
-        print(f"Saved {conv_path}")
+        log(f"Saved {conv_path}")
 
     return summary
 
@@ -517,20 +506,29 @@ def run_robustness(annotations_path: str,
 # ── main ──────────────────────────────────────────────────────────────────────
 
 if __name__ == '__main__':
+    import datetime
+
     ANNOTATIONS_PATH = os.path.join(
         os.path.dirname(__file__), '..', 'assets', 'annotations.json')
-    ASSETS_DIR_MAIN  = os.path.normpath(
-        os.path.join(os.path.dirname(__file__), '..', 'assets'))
 
     if not os.path.exists(ANNOTATIONS_PATH):
         print("No annotations found. Run src/annotator.py to create ground truth.")
         sys.exit(1)
 
-    annotations = load_annotations(ANNOTATIONS_PATH)
-    print(f"Annotated files: {list(annotations.keys())}")
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+    _log_path = os.path.join(RESULTS_DIR, 'results.txt')
 
-    run_ablation(ANNOTATIONS_PATH)
-    run_accuracy_eval(ANNOTATIONS_PATH)
-    run_robustness(ANNOTATIONS_PATH, n_runs=20)
+    _log_fh = open(_log_path, 'w')
+    try:
+        log(f"Evaluation run — {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
-    print("\nAll experiments complete. Results saved to results/")
+        annotations = load_annotations(ANNOTATIONS_PATH)
+        log(f"Annotated files: {list(annotations.keys())}")
+
+        run_ablation(ANNOTATIONS_PATH)
+        run_accuracy_eval(ANNOTATIONS_PATH)
+        run_robustness(ANNOTATIONS_PATH, n_runs=20)
+
+        log(f"\nAll experiments complete. Results saved to {RESULTS_DIR}/")
+    finally:
+        _log_fh.close()

@@ -1,0 +1,2 @@
+n_files,exact_acc_mean,exact_acc_std,near_acc_mean,near_acc_std,wrong_limb_mean,wrong_limb_std,limb_acc_mean,limb_acc_std,avr_mean,avr_std,flip_rate,flip_excluded_exact,flip_excluded_limb
+17,78.54671280276816,19.55553100476787,87.5432525951557,20.761245674740486,8.650519031141869,14.842637086178005,85.88235294117646,23.529411764705884,0.0,0.0,5.88235294117647,81.98529411764704,90.0

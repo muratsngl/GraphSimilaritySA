@@ -1,0 +1,180 @@
+Evaluation run — 2026-06-12 17:14:56
+Annotated files: ['Ch01_nonPBR.glb', 'Ch07_nonPBR.glb', 'Ch08_nonPBR.glb', 'Ch09_nonPBR.glb', 'Ch14_nonPBR.glb', 'Ch17_nonPBR.glb', 'Ch19_nonPBR.glb', 'Ch25_nonPBR.glb', 'Ch32_nonPBR.glb', 'Ch36_nonPBR.glb', 'Ch42_nonPBR.glb', 'Ch43_nonPBR.glb', 'Dozy.glb', 'Exo Gray.glb', 'Remy.glb', 'Whiteclown N Hallin.glb', 'merged-model.glb']
+
+=== ABLATION (17 file(s), sigma=0.2) ===
+
+  Config: Plain QAP
+    Ch01_nonPBR.glb: exact=29.4%  limb=40.0%  E=-42.5184
+    Ch07_nonPBR.glb: exact=41.2%  limb=60.0%  E=-42.9634
+    Ch08_nonPBR.glb: exact=29.4%  limb=40.0%  E=-41.9210
+    Ch09_nonPBR.glb: exact=11.8%  limb=20.0%  E=-42.7140
+    Ch14_nonPBR.glb: exact=23.5%  limb=40.0%  E=-38.6907
+    Ch17_nonPBR.glb: exact=29.4%  limb=40.0%  E=-41.1117
+    Ch19_nonPBR.glb: exact=17.6%  limb=20.0%  E=-40.1539
+    Ch25_nonPBR.glb: exact=41.2%  limb=60.0%  E=-42.1884
+    Ch32_nonPBR.glb: exact=29.4%  limb=40.0%  E=-41.2954
+    Ch36_nonPBR.glb: exact=41.2%  limb=60.0%  E=-42.8857
+    Ch42_nonPBR.glb: exact=47.1%  limb=60.0%  E=-41.8606
+    Ch43_nonPBR.glb: exact=23.5%  limb=40.0%  E=-38.3731
+    Dozy.glb: exact=17.6%  limb=20.0%  E=-40.1539
+    Exo Gray.glb: exact=23.5%  limb=20.0%  E=-45.2728
+    Remy.glb: exact=41.2%  limb=60.0%  E=-44.0392
+    Whiteclown N Hallin.glb: exact=64.7%  limb=100.0%  E=-40.9893
+    merged-model.glb: exact=17.6%  limb=20.0%  E=-42.8737
+
+  Config: Lambda only
+    Ch01_nonPBR.glb: exact=58.8%  limb=60.0%  E=-39.6204
+    Ch07_nonPBR.glb: exact=94.1%  limb=100.0%  E=-39.6347
+    Ch08_nonPBR.glb: exact=23.5%  limb=20.0%  E=-38.9732
+    Ch09_nonPBR.glb: exact=47.1%  limb=60.0%  E=-38.1667
+    Ch14_nonPBR.glb: exact=23.5%  limb=20.0%  E=-36.4598
+    Ch17_nonPBR.glb: exact=23.5%  limb=20.0%  E=-38.3619
+    Ch19_nonPBR.glb: exact=82.4%  limb=100.0%  E=-37.2936
+    Ch25_nonPBR.glb: exact=58.8%  limb=60.0%  E=-39.2376
+    Ch32_nonPBR.glb: exact=94.1%  limb=100.0%  E=-38.4543
+    Ch36_nonPBR.glb: exact=58.8%  limb=60.0%  E=-39.5963
+    Ch42_nonPBR.glb: exact=23.5%  limb=20.0%  E=-38.7023
+    Ch43_nonPBR.glb: exact=58.8%  limb=60.0%  E=-36.7228
+    Dozy.glb: exact=76.5%  limb=100.0%  E=-37.2936
+    Exo Gray.glb: exact=58.8%  limb=60.0%  E=-40.6081
+    Remy.glb: exact=23.5%  limb=20.0%  E=-41.1175
+    Whiteclown N Hallin.glb: exact=23.5%  limb=20.0%  E=-38.8808
+    merged-model.glb: exact=58.8%  limb=60.0%  E=-40.1533
+
+  Config: Gamma only
+    Ch01_nonPBR.glb: exact=76.5%  limb=100.0%  E=-41.3990
+    Ch07_nonPBR.glb: exact=76.5%  limb=80.0%  E=-41.4181
+    Ch08_nonPBR.glb: exact=76.5%  limb=80.0%  E=-40.6270
+    Ch09_nonPBR.glb: exact=35.3%  limb=60.0%  E=-41.6265
+    Ch14_nonPBR.glb: exact=41.2%  limb=40.0%  E=-38.0969
+    Ch17_nonPBR.glb: exact=76.5%  limb=80.0%  E=-40.1140
+    Ch19_nonPBR.glb: exact=23.5%  limb=20.0%  E=-39.6467
+    Ch25_nonPBR.glb: exact=76.5%  limb=80.0%  E=-40.9652
+    Ch32_nonPBR.glb: exact=76.5%  limb=80.0%  E=-40.2184
+    Ch36_nonPBR.glb: exact=76.5%  limb=80.0%  E=-41.4413
+    Ch42_nonPBR.glb: exact=76.5%  limb=80.0%  E=-40.5357
+    Ch43_nonPBR.glb: exact=76.5%  limb=80.0%  E=-37.5015
+    Dozy.glb: exact=23.5%  limb=20.0%  E=-39.6467
+    Exo Gray.glb: exact=64.7%  limb=80.0%  E=-43.7805
+    Remy.glb: exact=58.8%  limb=60.0%  E=-42.9303
+    Whiteclown N Hallin.glb: exact=58.8%  limb=60.0%  E=-39.6348
+    merged-model.glb: exact=23.5%  limb=20.0%  E=-42.0318
+
+  Config: Both penalties
+    Ch01_nonPBR.glb: exact=88.2%  limb=100.0%  E=-39.6204
+    Ch07_nonPBR.glb: exact=94.1%  limb=100.0%  E=-39.6347
+    Ch08_nonPBR.glb: exact=94.1%  limb=100.0%  E=-38.9732
+    Ch09_nonPBR.glb: exact=76.5%  limb=100.0%  E=-38.1667
+    Ch14_nonPBR.glb: exact=82.4%  limb=100.0%  E=-36.4598
+    Ch17_nonPBR.glb: exact=94.1%  limb=100.0%  E=-38.3619
+    Ch19_nonPBR.glb: exact=35.3%  limb=40.0%  E=-37.6091
+    Ch25_nonPBR.glb: exact=94.1%  limb=100.0%  E=-39.2376
+    Ch32_nonPBR.glb: exact=94.1%  limb=100.0%  E=-38.4543
+    Ch36_nonPBR.glb: exact=94.1%  limb=100.0%  E=-39.5963
+    Ch42_nonPBR.glb: exact=94.1%  limb=100.0%  E=-38.7023
+    Ch43_nonPBR.glb: exact=82.4%  limb=100.0%  E=-36.7228
+    Dozy.glb: exact=29.4%  limb=40.0%  E=-37.6091
+    Exo Gray.glb: exact=94.1%  limb=100.0%  E=-40.6081
+    Remy.glb: exact=23.5%  limb=20.0%  E=-41.1175
+    Whiteclown N Hallin.glb: exact=88.2%  limb=100.0%  E=-38.8808
+    merged-model.glb: exact=58.8%  limb=60.0%  E=-40.1533
+
+  Config: Full method
+    Ch01_nonPBR.glb: exact=88.2%  limb=100.0%  E=-39.6204
+    Ch07_nonPBR.glb: exact=94.1%  limb=100.0%  E=-39.6347
+    Ch08_nonPBR.glb: exact=94.1%  limb=100.0%  E=-38.9732
+    Ch09_nonPBR.glb: exact=76.5%  limb=100.0%  E=-38.1667
+    Ch14_nonPBR.glb: exact=82.4%  limb=100.0%  E=-36.4598
+    Ch17_nonPBR.glb: exact=94.1%  limb=100.0%  E=-38.3619
+    Ch19_nonPBR.glb: exact=58.8%  limb=60.0%  E=-37.2936
+    Ch25_nonPBR.glb: exact=58.8%  limb=60.0%  E=-39.2376
+    Ch32_nonPBR.glb: exact=94.1%  limb=100.0%  E=-38.4543
+    Ch36_nonPBR.glb: exact=94.1%  limb=100.0%  E=-39.5963
+    Ch42_nonPBR.glb: exact=94.1%  limb=100.0%  E=-38.7023
+    Ch43_nonPBR.glb: exact=82.4%  limb=100.0%  E=-36.7228
+    Dozy.glb: exact=58.8%  limb=60.0%  E=-37.2936
+    Exo Gray.glb: exact=94.1%  limb=100.0%  E=-40.6081
+    Remy.glb: exact=23.5%  limb=20.0%  E=-41.1175
+    Whiteclown N Hallin.glb: exact=88.2%  limb=100.0%  E=-38.8808
+    merged-model.glb: exact=58.8%  limb=60.0%  E=-40.1533
+
+Config               Exact%    Limb%     AVR%    Flip%      QAP E
+----------------------------------------------------------------
+Plain QAP              31.1     43.5     22.4     17.6   -41.7650
+Lambda only            52.2     55.3      0.0     35.3   -38.7810
+Gamma only             59.9     64.7      0.0      5.9   -40.6832
+Both penalties         77.5     85.9      0.0      5.9   -38.8181
+Full method            78.5     85.9      0.0      5.9   -38.7810
+
+Saved /Users/working/Desktop/Simulated_Annealing /results/ablation.csv
+
+=== ACCURACY EVAL (17 file(s), σ=0.2 λ=0.5 γ=3.0 restarts=7) ===
+
+File                                  Exact%   Limb%  Wrong%    AVR%  Flip      QAP E
+----------------------------------------------------------------------------------
+Ch01_nonPBR.glb                         88.2   100.0     0.0     0.0    no   -39.6204
+Ch07_nonPBR.glb                         94.1   100.0     0.0     0.0    no   -39.6347
+Ch08_nonPBR.glb                         94.1   100.0     0.0     0.0    no   -38.9732
+Ch09_nonPBR.glb                         76.5   100.0     0.0     0.0    no   -38.1667
+Ch14_nonPBR.glb                         82.4   100.0     0.0     0.0    no   -36.4598
+Ch17_nonPBR.glb                         94.1   100.0     0.0     0.0    no   -38.3619
+Ch19_nonPBR.glb                         58.8    60.0    23.5     0.0    no   -37.2936
+Ch25_nonPBR.glb                         58.8    60.0    23.5     0.0    no   -39.2376
+Ch32_nonPBR.glb                         94.1   100.0     0.0     0.0    no   -38.4543
+Ch36_nonPBR.glb                         94.1   100.0     0.0     0.0    no   -39.5963
+Ch42_nonPBR.glb                         94.1   100.0     0.0     0.0    no   -38.7023
+Ch43_nonPBR.glb                         82.4   100.0     0.0     0.0    no   -36.7228
+Dozy.glb                                58.8    60.0    23.5     0.0    no   -37.2936
+Exo Gray.glb                            94.1   100.0     0.0     0.0    no   -40.6081
+Remy.glb                                23.5    20.0    52.9     0.0   YES   -41.1175
+Whiteclown N Hallin.glb                 88.2   100.0     0.0     0.0    no   -38.8808
+merged-model.glb                        58.8    60.0    23.5     0.0    no   -40.1533
+
+=== AGGREGATE (17 file(s)) ===
+Exact accuracy:            78.5 ± 19.6 %
+Near accuracy (hop<=1):    87.5 ± 20.8 %
+Wrong limb rate:            8.7 ± 14.8 %
+Limb accuracy:             85.9 ± 23.5 %
+AVR:                        0.0 ± 0.0 %
+Flip rate:                  5.9 %
+Flip-excluded exact acc:   82.0 %
+Flip-excluded limb acc:    90.0 %
+
+Saved /Users/working/Desktop/Simulated_Annealing /results/accuracy.csv
+Saved /Users/working/Desktop/Simulated_Annealing /results/accuracy_summary.csv
+
+=== ROBUSTNESS (20 runs, file=Ch01_nonPBR.glb, σ=0.2 λ=0.5 γ=3.0 restarts=7) ===
+
+ Run  Seed   Exact%    Limb%      QAP E  Flip
+--------------------------------------------
+   0     0     52.9     60.0   -39.6204    no
+   1     1     88.2    100.0   -39.6204    no
+   2     2     58.8     60.0   -39.6204    no
+   3     3     23.5     20.0   -39.6204   YES
+   4     4     52.9     60.0   -39.6204    no
+   5     5     88.2    100.0   -39.6204    no
+   6     6     23.5     20.0   -39.6204   YES
+   7     7     52.9     60.0   -39.6204    no
+   8     8     58.8     60.0   -39.6204    no
+   9     9     52.9     60.0   -39.6204    no
+  10    10     23.5     20.0   -39.6204   YES
+  11    11     58.8     60.0   -39.6204    no
+  12    12     23.5     20.0   -39.6204   YES
+  13    13     52.9     60.0   -39.6204    no
+  14    14     88.2    100.0   -39.6204    no
+  15    15     88.2    100.0   -39.6204    no
+  16    16     88.2    100.0   -39.6204    no
+  17    17     58.8     60.0   -39.6204    no
+  18    18     88.2    100.0   -39.6204    no
+  19    19     52.9     60.0   -39.6204    no
+
+=== ROBUSTNESS SUMMARY (20 runs) ===
+QAP energy:     -39.6204 ± 0.0000
+Exact accuracy: 58.8 ± 22.8 %
+Limb accuracy:  64.0 ± 28.0 %
+Flip rate:      4 / 20 runs
+
+Saved /Users/working/Desktop/Simulated_Annealing /results/robustness.csv
+Saved /Users/working/Desktop/Simulated_Annealing /results/convergence.csv
+
+All experiments complete. Results saved to /Users/working/Desktop/Simulated_Annealing /results/

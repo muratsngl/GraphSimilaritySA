@@ -34,8 +34,11 @@ import dash_cytoscape as cyto
 
 from main import run_sa_pipeline, DEFAULT_GLB_PATH, SIGMA, LAMBDA_REPEL, GAMMA_PENALTY
 from skeleton import h36m_rest_positions
+from annotation_utils import load_annotations, get_annotation_for_glb, match_annotation
 
 GLB_PATH = DEFAULT_GLB_PATH
+ANNOTATIONS_PATH = os.path.normpath(
+    os.path.join(os.path.dirname(__file__), '..', 'assets', 'annotations.json'))
 
 # Which two world axes form the drawing plane, and whether to flip vertically.
 # Mixamo rigs are Y-up facing camera, so (x, y) is the front view; cytoscape's
@@ -226,6 +229,35 @@ for i, trg_p in enumerate(best_state):
     kind = 'leaf' if i in ik_leaf_set else 'internal'
     mapping_rows.append((i, ik_name, trg_name, kind))
 
+# ---- Ground truth from annotations.json ------------------------------------ #
+# Key is the bare GLB filename, matching the annotator's convention.
+_glb_key = os.path.basename(GLB_PATH)
+try:
+    _all_ann = load_annotations(ANNOTATIONS_PATH)
+    _ann_entry = get_annotation_for_glb(_all_ann, GLB_PATH)
+except FileNotFoundError:
+    _ann_entry = None
+
+gt_labels, gt_kinds = {}, {}
+_has_gt = _ann_entry is not None
+if _has_gt:
+    gt_state = match_annotation(_ann_entry, pruned_G, trg_ordered)
+    # Invert: trg_pos → ik_pos (only annotated joints, gt_state[i] >= 0)
+    gt_assigned = {int(trg_pos): ik_i
+                   for ik_i, trg_pos in enumerate(gt_state) if trg_pos >= 0}
+    for p, node_id in enumerate(trg_ordered):
+        if p in gt_assigned:
+            ik_idx = gt_assigned[p]
+            gt_labels[node_id] = str(ik_idx)
+            gt_kinds[node_id] = 'leaf' if ik_idx in ik_leaf_set else 'internal'
+        else:
+            gt_labels[node_id] = 'U'
+            gt_kinds[node_id] = 'unassigned'
+    _n_gt = sum(1 for v in gt_state if v >= 0)
+    _gt_label = f"GROUND TRUTH  ·  {_glb_key}  ·  {_n_gt}/17 annotated"
+else:
+    _gt_label = f"GROUND TRUTH  ·  {_glb_key}"
+
 
 # --------------------------------------------------------------------------- #
 # Styling (dark theme, matching visualize_graph.py)
@@ -338,13 +370,35 @@ app.layout = html.Div(
                        f"PRUNED  ·  {pruned_G.number_of_nodes()} nodes  ·  {pruned_G.number_of_edges()} edges"),
         ]),
 
-        # Row 2: IK rig | target (assignment) | mapping list
+        # Row 2: IK rig | SA result | ground truth | mapping list
         html.Div(style={'display': 'flex', 'flex': 1, 'overflow': 'hidden'}, children=[
             cyto_panel('ik-graph', graph_elements(G_ik, ik_pos, ik_labels, ik_kinds),
                        f"IK RIG  ·  {G_ik.number_of_nodes()} joints  ·  numbered"),
             html.Div(style=DIVIDER_STYLE),
             cyto_panel('target-graph', graph_elements(pruned_G, trg_pos2d, trg_labels, trg_kinds),
-                       f"TARGET  ·  assigned IK#  ·  U = unassigned"),
+                       f"TARGET (SA)  ·  assigned IK#  ·  U = unassigned"),
+            html.Div(style=DIVIDER_STYLE),
+            (
+                cyto_panel(
+                    'gt-graph',
+                    graph_elements(pruned_G, trg_pos2d, gt_labels, gt_kinds),
+                    _gt_label,
+                )
+                if _has_gt else
+                html.Div(style=PANEL_STYLE, children=[
+                    html.Div(_gt_label, style=PANEL_LABEL_STYLE),
+                    html.Div(
+                        "No matching ground truth",
+                        style={
+                            'flex': 1, 'display': 'flex',
+                            'alignItems': 'center', 'justifyContent': 'center',
+                            'color': '#6e7681', 'fontSize': '13px',
+                            'fontFamily': 'monospace', 'fontStyle': 'italic',
+                            'backgroundColor': '#0d1117',
+                        },
+                    ),
+                ])
+            ),
             mapping_panel(),
         ]),
     ])

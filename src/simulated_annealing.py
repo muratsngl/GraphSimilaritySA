@@ -155,23 +155,33 @@ def initialize_state(ik_leaves, ik_internals,
 # Phase 3: The Objective Function (Energy)
 # --------------------------------------------------------------------------- #
 
-def energy(state_array, K_ik, K_trg, lambda_repel=0.0):
-    """E = -sum K_ik * K_trg  +  lambda * sum |K_ik - K_trg_reordered|.
+def energy(state_array, K_ik, K_trg, lambda_repel=0.0,
+           lat_ik=None, lat_trg=None, lambda_lateral=0.0):
+    """E = -sum K_ik * K_trg
+          + lambda       * sum |K_ik - K_trg_reordered|
+          - lambda_lat   * sum_i lat_ik[i] . lat_trg[state[i]]
 
     Attraction term: rewards IK-close pairs mapping to target-close pairs.
     Mismatch term: penalises any asymmetry between IK affinity and target
     affinity — both far-IK-on-close-target (spine clustering) and
     close-IK-on-far-target (chain skipping) cost the same lambda per pair.
-    The four quadrants: close-close -> 0, far-far -> 0, either mismatch -> ~1.
-
-    lambda_repel=0.0 recovers the original QAP exactly.
+    Lateral term: rewards assignments where the IK joint and its assigned
+    target joint point in the same 2D direction from their respective roots
+    (cosine similarity in XY plane). Breaks left/right symmetry degeneracy
+    that the QAP alone cannot resolve. lat_ik and lat_trg are (n, 2) arrays
+    of unit vectors; joints at the origin have zero vectors and contribute 0.
+    lambda_repel=0.0 and lambda_lateral=0.0 recover the original QAP exactly.
     """
     reordered_K_trg = K_trg[np.ix_(state_array, state_array)]
     attraction = np.sum(K_ik * reordered_K_trg)
-    if lambda_repel == 0.0:
-        return -attraction
-    mismatch = np.sum(np.abs(K_ik - reordered_K_trg))
-    return -attraction + lambda_repel * mismatch
+    e = -attraction
+    if lambda_repel != 0.0:
+        mismatch = np.sum(np.abs(K_ik - reordered_K_trg))
+        e += lambda_repel * mismatch
+    if lambda_lateral != 0.0 and lat_ik is not None and lat_trg is not None:
+        lateral_alignment = np.sum(lat_ik * lat_trg[state_array])
+        e -= lambda_lateral * lateral_alignment
+    return e
 
 
 # --------------------------------------------------------------------------- #
@@ -262,6 +272,7 @@ def simulated_annealing(K_ik, K_trg,
                         T=1.0, alpha=0.999, T_min=0.0000001,
                         iters_per_temp=1,
                         lambda_repel=0.0,
+                        lat_ik=None, lat_trg=None, lambda_lateral=0.0,
                         penalty_fn=None,
                         gamma_penalty=0.0,
                         kinematic_filter=None,
@@ -294,7 +305,7 @@ def simulated_annealing(K_ik, K_trg,
     rng = np.random.default_rng(seed)
 
     def effective_energy(state):
-        e = energy(state, K_ik, K_trg, lambda_repel)
+        e = energy(state, K_ik, K_trg, lambda_repel, lat_ik, lat_trg, lambda_lateral)
         if penalty_fn is not None and gamma_penalty != 0.0:
             e += gamma_penalty * penalty_fn(state)
         return e

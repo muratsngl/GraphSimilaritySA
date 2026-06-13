@@ -32,7 +32,7 @@ import dash
 from dash import html
 import dash_cytoscape as cyto
 
-from main import run_sa_pipeline, DEFAULT_GLB_PATH, SIGMA, LAMBDA_REPEL, GAMMA_PENALTY
+from main import run_sa_pipeline, DEFAULT_GLB_PATH, SIGMA, LAMBDA_REPEL, GAMMA_PENALTY, LAMBDA_LATERAL
 from skeleton import h36m_rest_positions
 from annotation_utils import load_annotations, get_annotation_for_glb, match_annotation
 
@@ -357,7 +357,7 @@ app.layout = html.Div(
                 html.Span("Skeleton Mapping Viewer · physical coordinates",
                           style={'color': '#58a6ff', 'fontSize': '13px',
                                  'fontFamily': 'monospace', 'fontWeight': 'bold'}),
-                html.Span(f"σ={SIGMA}  λ={LAMBDA_REPEL}  γ={GAMMA_PENALTY}  ·  E={R['best_energy']:.4f}",
+                html.Span(f"σ={SIGMA}  λ={LAMBDA_REPEL}  γ={GAMMA_PENALTY}  λlat={LAMBDA_LATERAL}  ·  E={R['best_energy']:.4f}",
                           style={'color': '#8b949e', 'fontSize': '12px', 'fontFamily': 'monospace'}),
             ]),
 

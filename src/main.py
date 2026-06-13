@@ -5,7 +5,7 @@ import os
 
 from skeleton_extraction import build_qap_ready_graph
 from graph_modification import prune_leaves_iteratively
-from skeleton import build_human36m_graph
+from skeleton import build_human36m_graph, h36m_rest_positions
 from utils import normalize_distance_matrix
 from simulated_annealing import build_affinity, simulated_annealing_restarts, SAState
 
@@ -26,6 +26,16 @@ LAMBDA_REPEL = 0.5
 # the SA freezes at high temperature — the annealing schedule handles the gradual
 # enforcement.
 GAMMA_PENALTY = 3.0
+
+# Weight of the lateral alignment penalty.
+# Rewards assignments where the IK joint and its target assignment point in the
+# same 2D direction (XY plane) from their respective skeleton roots — cosine
+# similarity between normalized 2D position vectors. Breaks the left/right
+# symmetry degeneracy that the QAP energy alone cannot resolve, since the flipped
+# and correct assignments are energy-equivalent under pure QAP.
+# Dot products are in [-1, 1] per joint, so this term's contribution is bounded
+# by +/- lambda_lateral * n_joints and is comparable in scale to lambda_repel.
+LAMBDA_LATERAL = 1.0
 
 
 # --------------------------------------------------------------------------- #
@@ -67,6 +77,49 @@ def classify_positions(G, ordered_nodes):
 
 
 # --------------------------------------------------------------------------- #
+# Laterality helpers
+# --------------------------------------------------------------------------- #
+
+def compute_world_positions_xy(G):
+    """Accumulate local GLB translations from root to get world-space (x, y).
+
+    Each node carries a 'translation' attribute [tx, ty, tz] in local parent
+    space (stored by skeleton_extraction). BFS from the root composes the x and
+    y components additively — valid for humanoid rigs in T-pose where joint
+    local axes are aligned with world axes on the lateral plane.
+
+    Returns {node_id: np.array([world_x, world_y])}, positions relative to
+    the skeleton root (root is always at the origin).
+    """
+    root = next(n for n in G.nodes() if G.in_degree(n) == 0)
+    world_xy = {root: np.zeros(2)}
+    for node in nx.bfs_tree(G, root).nodes():
+        if node == root:
+            continue
+        parent = next(iter(G.predecessors(node)))
+        local = np.array(G.nodes[node].get('translation', [0.0, 0.0, 0.0]))
+        world_xy[node] = world_xy[parent] + local[:2]
+    return world_xy
+
+
+def build_laterality_vectors(ordered_nodes, world_xy):
+    """Return (n, 2) array of normalized 2D unit vectors for the lateral penalty.
+
+    Each row is the unit vector pointing from the skeleton root to that joint in
+    the XY plane. Joints at or near the origin (e.g. the root Hip) get a zero
+    vector and contribute 0 to the dot-product penalty — no information, no bias.
+    """
+    n = len(ordered_nodes)
+    lat = np.zeros((n, 2), dtype=np.float64)
+    for pos, node in enumerate(ordered_nodes):
+        xy = world_xy[node]
+        norm = np.linalg.norm(xy)
+        if norm > 1e-6:
+            lat[pos] = xy / norm
+    return lat
+
+
+# --------------------------------------------------------------------------- #
 # Pipelines
 # --------------------------------------------------------------------------- #
 
@@ -91,18 +144,22 @@ def run_pipeline(glb_path):
 def build_ik_rig():
     """The IK reference rig: the Human3.6M 17-joint skeleton from skeleton.py.
 
-    Returns (G_ik, ik_ordered_nodes, D_ik) where D_ik is the normalized
-    geodesic distance matrix over ik_ordered_nodes. Not pruned — it is already
-    the minimal reference configuration.
+    Returns (G_ik, ik_ordered_nodes, D_ik, lat_ik) where D_ik is the normalized
+    geodesic distance matrix and lat_ik is the (n, 2) laterality unit-vector array
+    built from H36M_REST_POSITIONS. Not pruned — it is already the minimal
+    reference configuration.
     """
     G_ik = build_human36m_graph()
     ik_ordered_nodes = sorted(G_ik.nodes())
     D_ik = graph_to_normalized_matrix(G_ik, ik_ordered_nodes)
-    return G_ik, ik_ordered_nodes, D_ik
+    rest_pos = h36m_rest_positions()
+    world_xy_ik = {n: np.array(rest_pos[n], dtype=np.float64) for n in G_ik.nodes()}
+    lat_ik = build_laterality_vectors(ik_ordered_nodes, world_xy_ik)
+    return G_ik, ik_ordered_nodes, D_ik, lat_ik
 
 
 DEFAULT_GLB_PATH = os.path.join(
-    os.path.dirname(__file__), '..', 'assets', 'Dozy.glb')
+    os.path.dirname(__file__), '..', 'assets', 'Ch09_nonPBR.glb')
 
 
 def build_hierarchy_constraints(G_ik, ik_ordered, pruned_G, trg_ordered):
@@ -199,18 +256,20 @@ def build_hierarchy_constraints(G_ik, ik_ordered, pruned_G, trg_ordered):
 
 def run_sa_pipeline(glb_path=DEFAULT_GLB_PATH, n_restarts=7, seed=91,
                     sigma=SIGMA, lambda_repel=LAMBDA_REPEL,
-                    gamma_penalty=GAMMA_PENALTY, verbose=False):
+                    gamma_penalty=GAMMA_PENALTY, lambda_lateral=LAMBDA_LATERAL,
+                    verbose=False):
     """Stage both skeletons and solve the correspondence QAP with SA.
 
     Returns a dict with everything needed to report or visualize the result:
       G_ik, ik_ordered, raw_G, pruned_G, trg_ordered,
-      ik_leaves, ik_internals, best_state, best_energy, history.
+      ik_leaves, ik_internals, lat_ik, lat_trg,
+      best_state, best_energy, history.
 
     Shared by main() (console report) and visualize_mapping.py (drawing) so the
     two never drift apart on parameters.
     """
     # --- IK rig (source): skeleton.py Human3.6M skeleton -------------------- #
-    G_ik, ik_ordered, D_ik = build_ik_rig()
+    G_ik, ik_ordered, D_ik, lat_ik = build_ik_rig()
 
     # --- Target (destination): pruned skeleton from the GLB ----------------- #
     raw_G, pruned_G, trg_ordered, D_trg = run_pipeline(glb_path)
@@ -221,6 +280,10 @@ def run_sa_pipeline(glb_path=DEFAULT_GLB_PATH, n_restarts=7, seed=91,
 
     K_ik = build_affinity(D_ik, sigma=sigma)
     K_trg = build_affinity(D_trg, sigma=sigma)
+
+    # --- Laterality vectors (XY unit vectors from skeleton root) ------------ #
+    world_xy_trg = compute_world_positions_xy(pruned_G)
+    lat_trg = build_laterality_vectors(trg_ordered, world_xy_trg)
 
     if len(ik_leaves) > len(trg_leaves) or len(ik_internals) > len(trg_internals):
         raise ValueError(
@@ -247,12 +310,15 @@ def run_sa_pipeline(glb_path=DEFAULT_GLB_PATH, n_restarts=7, seed=91,
         T=1.0, alpha=0.99, T_min=0.00001,
         iters_per_temp=100,
         lambda_repel=lambda_repel,
+        lat_ik=lat_ik, lat_trg=lat_trg, lambda_lateral=lambda_lateral,
     )
 
     return {
         'G_ik': G_ik, 'ik_ordered': ik_ordered,
         'raw_G': raw_G, 'pruned_G': pruned_G, 'trg_ordered': trg_ordered,
         'ik_leaves': ik_leaves, 'ik_internals': ik_internals,
+        'K_ik': K_ik, 'K_trg': K_trg,
+        'lat_ik': lat_ik, 'lat_trg': lat_trg,
         'best_state': best_state, 'best_energy': best_energy, 'history': history,
     }
 

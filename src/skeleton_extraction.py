@@ -18,7 +18,8 @@ def build_qap_ready_graph(glb_path):
     for joint_index in joints:
         node = gltf.nodes[joint_index]
         node_name = node.name if node.name else f"Joint_{joint_index}"
-        G.add_node(joint_index, name=node_name)
+        translation = list(node.translation) if node.translation else [0.0, 0.0, 0.0]
+        G.add_node(joint_index, name=node_name, translation=translation)
         
         if node.children:
             for child_index in node.children:
